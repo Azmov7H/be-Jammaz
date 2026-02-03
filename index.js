@@ -1,0 +1,113 @@
+import 'dotenv/config';
+import dbConnect from './lib/db.js';
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import morgan from 'morgan';
+import mongoose from 'mongoose';
+import authRoutes from './routes/authRoutes.js';
+import customerRoutes from './routes/customerRoutes.js';
+import productRoutes from './routes/productRoutes.js';
+import invoiceRoutes from './routes/invoiceRoutes.js';
+import treasuryRoutes from './routes/treasuryRoutes.js';
+import financeRoutes from './routes/financeRoutes.js';
+import docsRoutes from './routes/docsRoutes.js';
+import supplierRoutes from './routes/supplierRoutes.js';
+import stockRoutes from './routes/stockRoutes.js';
+import reportRoutes from './routes/reportRoutes.js';
+import userRoutes from './routes/userRoutes.js';
+import logRoutes from './routes/logRoutes.js';
+import purchaseRoutes from './routes/purchaseRoutes.js';
+import notificationRoutes from './routes/notificationRoutes.js';
+import physicalInventoryRoutes from './routes/physicalInventoryRoutes.js';
+import dailySalesRoutes from './routes/dailySalesRoutes.js';
+import accountingRoutes from './routes/accountingRoutes.js';
+import pricingRoutes from './routes/pricingRoutes.js';
+import settingsRoutes from './routes/settingsRoutes.js';
+
+
+
+
+
+
+
+
+
+
+
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    process.env.NEXT_PUBLIC_BASE_URL
+].filter(Boolean);
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) === -1) {
+            return callback(null, true); // Temporarily allow all for debugging
+        }
+        return callback(null, true);
+    },
+    credentials: true
+}));
+app.use(express.json());
+app.use(cookieParser());
+app.use(morgan('dev'));
+
+// Database Connection
+dbConnect().catch(err => {
+    // Error is already logged in lib/db.js
+});
+
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/customers', customerRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/treasury', treasuryRoutes);
+app.use('/api/financial', financeRoutes);
+app.use('/api/suppliers', supplierRoutes);
+app.use('/api/stock', stockRoutes);
+app.use('/api', reportRoutes); // reportRoutes handles /dashboard and /reports
+app.use('/api/users', userRoutes);
+app.use('/api/logs', logRoutes);
+app.use('/api/purchases', purchaseRoutes);
+app.use('/api/purchase-orders', purchaseRoutes); // Alias for frontend compatibility
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/physical-inventory', physicalInventoryRoutes);
+app.use('/api/daily-sales', dailySalesRoutes);
+app.use('/api/accounting', accountingRoutes);
+app.use('/api/pricing', pricingRoutes);
+app.use('/api/docs', docsRoutes);
+app.use('/api/settings', settingsRoutes);
+
+
+
+
+
+
+
+
+
+
+
+
+app.get('/', (req, res) => {
+    res.json({ message: 'Transfer ERP API is running' });
+});
+
+// Error Handler
+import { errorHandler } from './middlewares/errorHandler.js';
+app.use(errorHandler);
+
+// Start Server
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server is running on http://127.0.0.1:${PORT}`);
+});
