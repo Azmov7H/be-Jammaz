@@ -43,17 +43,17 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
+    'https://jammaz.vercel.app',
     process.env.NEXT_PUBLIC_BASE_URL
 ].filter(Boolean);
 
 app.use(cors({
     origin: function (origin, callback) {
-        // allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) === -1) {
-            return callback(null, true); // Temporarily allow all for debugging
+        if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
+            return callback(null, true);
         }
-        return callback(null, true);
+        return callback(new Error('Not allowed by CORS'));
     },
     credentials: true
 }));

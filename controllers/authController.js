@@ -16,7 +16,7 @@ export const AuthController = {
             secure: process.env.NODE_ENV === 'production',
             maxAge: 60 * 60 * 24 * 1000,
             path: '/',
-            sameSite: 'lax',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         });
 
         return result.user;
@@ -41,7 +41,7 @@ export const AuthController = {
             secure: process.env.NODE_ENV === 'production',
             maxAge: 60 * 60 * 24 * 1000,
             path: '/',
-            sameSite: 'lax',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         });
 
         return result.user;
