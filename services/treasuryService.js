@@ -411,24 +411,33 @@ export const TreasuryService = {
 
     /**
      * Get current balance
+     * Calculates the total balance from all treasury transactions
      */
     async getCurrentBalance() {
-        // Get latest cashbox record
-        const latestCashbox = await CashboxDaily.findOne()
-            .sort({ date: -1 })
-            .lean();
+        // Calculate balance directly from all transactions for accuracy
+        const result = await TreasuryTransaction.aggregate([
+            {
+                $group: {
+                    _id: null,
+                    totalIncome: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0]
+                        }
+                    },
+                    totalExpense: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0]
+                        }
+                    }
+                }
+            }
+        ]);
 
-        if (!latestCashbox) {
+        if (!result || result.length === 0) {
             return 0;
         }
 
-        // If reconciled, use closing balance
-        if (latestCashbox.isReconciled) {
-            return latestCashbox.closingBalance;
-        }
-
-        // Otherwise calculate expected balance
-        return latestCashbox.openingBalance + latestCashbox.netChange;
+        return (result[0].totalIncome || 0) - (result[0].totalExpense || 0);
     },
 
     /**
@@ -527,30 +536,48 @@ export const TreasuryService = {
         ]);
         const totalOutstandingDebt = debtAgg[0]?.total || 0;
 
-        const latestCashbox = await CashboxDaily.findOne().sort({ date: -1 }).lean();
-        const breakdown = {
-            cash: (latestCashbox?.openingBalance || 0) + (latestCashbox?.netChange || 0) - (latestCashbox?.bankIncome || 0) + (latestCashbox?.bankExpenses || 0) - (latestCashbox?.walletIncome || 0) + (latestCashbox?.walletExpenses || 0),
-            bank: (latestCashbox?.bankIncome || 0) - (latestCashbox?.bankExpenses || 0),
-            wallet: (latestCashbox?.walletIncome || 0) - (latestCashbox?.walletExpenses || 0)
-        };
-        // wait, the above breakdown for cash is wrong because openingBalance is total.
-        // Actually, if we want a real breakdown, we need to track them separately in CashboxDaily.
-        // For now, let's just return the total balance and maybe the totals for the period.
+        // Calculate breakdown by payment method from all transactions
+        const breakdownAgg = await TreasuryTransaction.aggregate([
+            {
+                $group: {
+                    _id: '$method',
+                    income: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0]
+                        }
+                    },
+                    expense: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0]
+                        }
+                    }
+                }
+            }
+        ]);
+
+        // Initialize breakdown
+        const breakdown = { cash: 0, bank: 0, wallet: 0, check: 0 };
+
+        // Populate breakdown from aggregation
+        for (const item of breakdownAgg) {
+            const method = item._id || 'cash';
+            const net = (item.income || 0) - (item.expense || 0);
+            if (method === 'bank') {
+                breakdown.bank = net;
+            } else if (method === 'wallet') {
+                breakdown.wallet = net;
+            } else if (method === 'check') {
+                breakdown.check = net;
+            } else {
+                breakdown.cash += net; // cash or null/undefined
+            }
+        }
 
         const currentBalance = await this.getCurrentBalance();
 
-        const currentBank = latestCashbox?.closingBankBalance || 0;
-        const currentWallet = latestCashbox?.closingWalletBalance || 0;
-        const currentCheck = latestCashbox?.closingCheckBalance || 0;
-
         return {
             balance: currentBalance,
-            breakdown: {
-                bank: currentBank,
-                wallet: currentWallet,
-                check: currentCheck,
-                cash: currentBalance - currentBank - currentWallet - currentCheck
-            },
+            breakdown,
             periodBalance: totals.income - totals.expense,
             totalIncome: totals.income,
             totalExpense: totals.expense,
