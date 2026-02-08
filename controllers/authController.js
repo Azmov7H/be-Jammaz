@@ -16,7 +16,7 @@ export const AuthController = {
             secure: process.env.NODE_ENV === 'production',
             maxAge: 60 * 60 * 24 * 1000,
             path: '/',
-            sameSite: 'lax', // Standard CSRF protection
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         });
         console.log(`[Auth] Cookie 'token' set for user: ${email}`);
 
@@ -43,7 +43,7 @@ export const AuthController = {
             secure: process.env.NODE_ENV === 'production',
             maxAge: 60 * 60 * 24 * 1000,
             path: '/',
-            sameSite: 'lax',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         });
 
         return result.user;
