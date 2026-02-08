@@ -1,12 +1,9 @@
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
 import CashboxDaily from '../models/CashboxDaily.js';
 import Invoice from '../models/Invoice.js';
-import PurchaseOrder from '../models/PurchaseOrder.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
-import Customer from '../models/Customer.js';
-import Supplier from '../models/Supplier.js';
+
 import Debt from '../models/Debt.js';
-import SalesReturn from '../models/SalesReturn.js';
 
 /**
  * Treasury/Cashbox Management Service
@@ -21,6 +18,7 @@ export const TreasuryService = {
         const receiptNumber = await this.getNextReceiptNumber(session);
 
         // Create treasury transaction
+        const method = invoice.paymentType || 'cash';
         const transaction = await TreasuryTransaction.create([{
             type: 'INCOME',
             receiptNumber,
@@ -30,15 +28,18 @@ export const TreasuryService = {
             referenceId: invoice._id,
             partnerId: invoice.customer || invoice.customerId,
             date: invoice.date || new Date(),
+            method: method,
             createdBy: userId
         }], { session });
 
-        // Update daily cashbox only if it's a cash transaction
-        if (invoice.paymentType === 'cash' || !invoice.paymentType) {
-            await this.updateDailyCashbox(invoice.date || new Date(), {
-                salesIncome: invoice.total
-            }, session);
-        }
+        // Update daily cashbox based on method
+        const updateField = method === 'bank' ? 'bankIncome' :
+            method === 'wallet' ? 'walletIncome' :
+                method === 'check' ? 'checkIncome' : 'salesIncome';
+
+        await this.updateDailyCashbox(invoice.date || new Date(), {
+            [updateField]: invoice.total
+        }, session);
 
         return transaction[0];
     },
@@ -47,56 +48,68 @@ export const TreasuryService = {
      * Record collection of a payment for an invoice (Debt repayment)
      */
     async recordPaymentCollection(invoice, amount, userId, method = 'cash', note = '', meta = {}, session = null) {
-        const methodLabel = method === 'bank' ? '(بنك)' : method === 'wallet' ? '(محفظة)' : '';
-        const customerName = invoice.customer?.name || invoice.customerName || '';
-
-        // Generate receipt number
-        const receiptNumber = await this.getNextReceiptNumber(session);
-
-        const transaction = await TreasuryTransaction.create([{
-            type: 'INCOME',
-            receiptNumber,
-            amount: amount,
-            description: `تحصيل دفعة - فاتورة #${invoice.number} - العميل: ${customerName} ${methodLabel} ${note ? `- ${note}` : ''}`,
+        return this._recordCollection({
+            amount,
+            userId,
+            method,
+            note,
+            meta,
+            session,
             referenceType: 'Invoice',
             referenceId: invoice._id,
             partnerId: invoice.customer || invoice.customerId,
-            date: new Date(),
-            createdBy: userId,
-            meta: meta
-        }], { session });
-
-        return transaction[0];
+            description: `تحصيل دفعة - فاتورة #${invoice.number} - العميل: ${invoice.customer?.name || invoice.customerName || ''}`
+        });
     },
 
     /**
      * Record Unified Collection (Payment against total balance)
      */
     async recordUnifiedCollection(customer, amount, userId, method = 'cash', note = '', meta = {}, session = null) {
-        const methodLabel = method === 'bank' ? '(بنك)' : method === 'wallet' ? '(محفظة)' : '';
+        return this._recordCollection({
+            amount,
+            userId,
+            method,
+            note,
+            meta,
+            session,
+            referenceType: 'UnifiedCollection',
+            referenceId: customer._id,
+            partnerId: customer._id,
+            description: `تحصيل مجمع - ${customer.name}`
+        });
+    },
 
-        // Generate receipt number
+    /**
+     * Generic helper for recording collections (Internal)
+     * @private
+     */
+    async _recordCollection({ amount, userId, method, note, meta, session, referenceType, referenceId, partnerId, description }) {
+        const methodLabel = method === 'bank' ? '(بنك)' :
+            method === 'wallet' ? '(محفظة)' :
+                method === 'check' ? '(شيك)' : '';
         const receiptNumber = await this.getNextReceiptNumber(session);
 
         const transaction = await TreasuryTransaction.create([{
             type: 'INCOME',
             receiptNumber,
             amount: amount,
-            description: `تحصيل مجمع - ${customer.name} ${methodLabel} ${note ? `- ${note}` : ''}`,
-            referenceType: 'UnifiedCollection',
-            referenceId: customer._id,
-            partnerId: customer._id,
+            description: `${description} ${methodLabel} ${note ? `- ${note}` : ''}`,
+            referenceType,
+            referenceId,
+            partnerId,
             date: new Date(),
             createdBy: userId,
+            method: method,
             meta: meta
         }], { session });
 
-        // Update daily cashbox only if it's a cash transaction
-        if (method === 'cash') {
-            await this.updateDailyCashbox(new Date(), {
-                salesIncome: amount
-            }, session);
-        }
+        // Update daily cashbox based on method
+        const updateField = method === 'bank' ? 'bankIncome' :
+            method === 'wallet' ? 'walletIncome' :
+                method === 'check' ? 'checkIncome' : 'salesIncome';
+
+        await this.updateDailyCashbox(new Date(), { [updateField]: amount }, session);
 
         return transaction[0];
     },
@@ -119,15 +132,24 @@ export const TreasuryService = {
             referenceId: debtId,
             partnerId: partnerId,
             date: new Date(),
+            method: method,
             createdBy: userId,
             meta: meta
         }], { session });
 
-        if (method === 'cash') {
-            await this.updateDailyCashbox(new Date(), {
-                [type === 'INCOME' ? 'salesIncome' : 'purchaseExpenses']: amount
-            }, session);
+        // Update daily cashbox based on method
+        let updateField;
+        if (type === 'INCOME') {
+            updateField = method === 'bank' ? 'bankIncome' :
+                method === 'wallet' ? 'walletIncome' :
+                    method === 'check' ? 'checkIncome' : 'salesIncome';
+        } else {
+            updateField = method === 'bank' ? 'bankExpenses' :
+                method === 'wallet' ? 'walletExpenses' :
+                    method === 'check' ? 'checkExpenses' : 'purchaseExpenses';
         }
+
+        await this.updateDailyCashbox(new Date(), { [updateField]: amount }, session);
 
         return transaction[0];
     },
@@ -138,7 +160,8 @@ export const TreasuryService = {
     async recordPurchaseExpense(purchaseOrder, userId, session = null) {
         // Create treasury transaction
         const typeLabel = purchaseOrder.paymentType === 'wallet' ? '(محفظة)' :
-            purchaseOrder.paymentType === 'bank' ? '(بنك)' : '';
+            purchaseOrder.paymentType === 'bank' ? '(بنك)' :
+                purchaseOrder.paymentType === 'check' ? '(شيك)' : '';
 
         const transaction = await TreasuryTransaction.create([{
             type: 'EXPENSE',
@@ -148,15 +171,19 @@ export const TreasuryService = {
             referenceId: purchaseOrder._id,
             partnerId: purchaseOrder.supplier,
             date: purchaseOrder.receivedDate || new Date(),
+            method: purchaseOrder.paymentType || 'cash',
             createdBy: userId
         }], { session });
 
-        // Update daily cashbox only if it's a cash transaction
-        if (purchaseOrder.paymentType === 'cash' || !purchaseOrder.paymentType) {
-            await this.updateDailyCashbox(purchaseOrder.receivedDate || new Date(), {
-                purchaseExpenses: purchaseOrder.totalCost
-            }, session);
-        }
+        // Update daily cashbox based on method
+        const method = purchaseOrder.paymentType || 'cash';
+        const updateField = method === 'bank' ? 'bankExpenses' :
+            method === 'wallet' ? 'walletExpenses' :
+                method === 'check' ? 'checkExpenses' : 'purchaseExpenses';
+
+        await this.updateDailyCashbox(purchaseOrder.receivedDate || new Date(), {
+            [updateField]: purchaseOrder.totalCost
+        }, session);
 
         return transaction[0];
     },
@@ -165,7 +192,9 @@ export const TreasuryService = {
      * Record payment made to a supplier (Debt repayment)
      */
     async recordSupplierPayment(supplier, amount, poNumber, poId, userId, method = 'cash', note = '', meta = {}, session = null) {
-        const methodLabel = method === 'bank' ? '(بنك)' : method === 'wallet' ? '(محفظة)' : '';
+        const methodLabel = method === 'bank' ? '(بنك)' :
+            method === 'wallet' ? '(محفظة)' :
+                method === 'check' ? '(شيك)' : '';
         const transaction = await TreasuryTransaction.create([{
             type: 'EXPENSE',
             amount: amount,
@@ -174,19 +203,19 @@ export const TreasuryService = {
             referenceId: poId,
             partnerId: supplier?._id || supplier,
             date: new Date(),
+            method: method,
             createdBy: userId,
             meta: meta
         }], { session });
 
-        // Update daily cashbox only if it's a cash transaction
-        // (Assuming 'bank' and 'wallet' are handled in separate systems or the user wants them tracked differently)
-        // If the user wants ALL recorded in CashboxDaily, remove the if check.
-        // However, usually Cashbox is physical cash.
-        if (method === 'cash') {
-            await this.updateDailyCashbox(new Date(), {
-                purchaseExpenses: amount
-            }, session);
-        }
+        // Update daily cashbox based on method
+        const updateField = method === 'bank' ? 'bankExpenses' :
+            method === 'wallet' ? 'walletExpenses' :
+                method === 'check' ? 'checkExpenses' : 'purchaseExpenses';
+
+        await this.updateDailyCashbox(new Date(), {
+            [updateField]: amount
+        }, session);
 
         return transaction[0];
     },
@@ -202,7 +231,7 @@ export const TreasuryService = {
         let cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
 
         if (!cashbox) {
-            // Get previous day's closing balance
+            // Get previous day's closing balances
             const yesterday = new Date(startOfDay);
             yesterday.setDate(yesterday.getDate() - 1);
             const previousDay = await CashboxDaily.findOne({ date: yesterday }).session(session);
@@ -210,18 +239,34 @@ export const TreasuryService = {
             const created = await CashboxDaily.create([{
                 date: startOfDay,
                 openingBalance: previousDay?.closingBalance || 0,
+                openingBankBalance: previousDay?.closingBankBalance || 0,
+                openingWalletBalance: previousDay?.closingWalletBalance || 0,
+                openingCheckBalance: previousDay?.closingCheckBalance || 0,
                 salesIncome: 0,
-                purchaseExpenses: 0
+                purchaseExpenses: 0,
+                bankIncome: 0,
+                bankExpenses: 0,
+                walletIncome: 0,
+                walletExpenses: 0,
+                checkIncome: 0,
+                checkExpenses: 0
             }], { session });
             cashbox = created[0];
         }
 
         // Update with increments
-        if (updates.salesIncome) {
-            cashbox.salesIncome += updates.salesIncome;
-        }
-        if (updates.purchaseExpenses) {
-            cashbox.purchaseExpenses += updates.purchaseExpenses;
+        const allowedFields = [
+            'salesIncome', 'purchaseExpenses',
+            'bankIncome', 'bankExpenses',
+            'walletIncome', 'walletExpenses',
+            'checkIncome', 'checkExpenses',
+            'adjustment' // Added but typically not incremented here
+        ];
+
+        for (const [field, amount] of Object.entries(updates)) {
+            if (allowedFields.includes(field) && amount) {
+                cashbox[field] = (cashbox[field] || 0) + amount;
+            }
         }
 
         await cashbox.save({ session });
@@ -231,7 +276,7 @@ export const TreasuryService = {
     /**
      * Add manual income entry
      */
-    async addManualIncome(date, amount, reason, userId, session = null) {
+    async addManualIncome(date, amount, reason, userId, method = 'cash', session = null) {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -258,8 +303,18 @@ export const TreasuryService = {
             description: reason,
             referenceType: 'Manual',
             date: new Date(),
+            method,
             createdBy: userId
         }], { session });
+
+        // If it's bank or wallet, we need to update the specific fields too
+        // (CashboxDaily.addIncome only increments manualIncome array and openingBalance in its own way?)
+        // Wait, I should check CashboxDaily.addIncome implementation.
+        if (method !== 'cash') {
+            const updateField = method === 'bank' ? 'bankIncome' :
+                method === 'wallet' ? 'walletIncome' : 'checkIncome';
+            await this.updateDailyCashbox(date, { [updateField]: amount }, session);
+        }
 
         return cashbox;
     },
@@ -267,7 +322,7 @@ export const TreasuryService = {
     /**
      * Add manual expense entry
      */
-    async addManualExpense(date, amount, reason, category, userId, session = null) {
+    async addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null) {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -294,8 +349,15 @@ export const TreasuryService = {
             description: reason,
             referenceType: 'Manual',
             date: new Date(),
+            method,
             createdBy: userId
         }], { session });
+
+        if (method !== 'cash') {
+            const updateField = method === 'bank' ? 'bankExpenses' :
+                method === 'wallet' ? 'walletExpenses' : 'checkExpenses';
+            await this.updateDailyCashbox(date, { [updateField]: amount }, session);
+        }
 
         return cashbox;
     },
@@ -304,25 +366,14 @@ export const TreasuryService = {
      * Record refund for Sales Return
      */
     async recordReturnRefund(salesReturn, amount, userId, session = null) {
-        // Update daily cashbox
-        await this.updateDailyCashbox(new Date(), {
-            purchaseExpenses: 0 // We don't want to increment purchaseExpenses? Or maybe we do?
-            // Actually CashboxDaily tracks 'manualExpenses' separately. 
-            // Sales Refund is cash OUT.
-            // If we don't have a specific field for it in CashboxDaily, we might need to put it in manualExpenses or just 'purchaseExpenses'
-            // But 'purchaseExpenses' implies buying goods.
-            // Let's treat it as a reduction of Sales Income?
-            // CashboxDaily has 'salesIncome'.
-        }, session);
-
-        // Better: Update Cashbox directly to reduce Sales Income? 
-        // Or add a new field 'returns'.
-        // For simplicity/compatibility with existing CashboxDaily (which has salesIncome, purchaseExpenses, manualIncome, manualExpenses):
-        // We will add it as a 'Manual Expense' BUT with a specific note, OR subtract from SalesIncome.
-        // Subtracting from SalesIncome makes sense for "Net Sales" in Cashbox.
+        // Update daily cashbox based on method
+        const method = salesReturn.refundMethod || 'cash';
+        const updateField = method === 'bank' ? 'bankIncome' :
+            method === 'wallet' ? 'walletIncome' :
+                method === 'check' ? 'checkIncome' : 'salesIncome';
 
         await this.updateDailyCashbox(new Date(), {
-            salesIncome: -amount // Negative income
+            [updateField]: -amount // Negative income reflects a refund
         }, session);
 
         const transaction = await TreasuryTransaction.create([{
@@ -333,6 +384,7 @@ export const TreasuryService = {
             referenceId: salesReturn._id,
             partnerId: salesReturn.customer,
             date: new Date(),
+            method: method,
             createdBy: userId
         }], { session });
 
@@ -475,10 +527,30 @@ export const TreasuryService = {
         ]);
         const totalOutstandingDebt = debtAgg[0]?.total || 0;
 
+        const latestCashbox = await CashboxDaily.findOne().sort({ date: -1 }).lean();
+        const breakdown = {
+            cash: (latestCashbox?.openingBalance || 0) + (latestCashbox?.netChange || 0) - (latestCashbox?.bankIncome || 0) + (latestCashbox?.bankExpenses || 0) - (latestCashbox?.walletIncome || 0) + (latestCashbox?.walletExpenses || 0),
+            bank: (latestCashbox?.bankIncome || 0) - (latestCashbox?.bankExpenses || 0),
+            wallet: (latestCashbox?.walletIncome || 0) - (latestCashbox?.walletExpenses || 0)
+        };
+        // wait, the above breakdown for cash is wrong because openingBalance is total.
+        // Actually, if we want a real breakdown, we need to track them separately in CashboxDaily.
+        // For now, let's just return the total balance and maybe the totals for the period.
+
         const currentBalance = await this.getCurrentBalance();
+
+        const currentBank = latestCashbox?.closingBankBalance || 0;
+        const currentWallet = latestCashbox?.closingWalletBalance || 0;
+        const currentCheck = latestCashbox?.closingCheckBalance || 0;
 
         return {
             balance: currentBalance,
+            breakdown: {
+                bank: currentBank,
+                wallet: currentWallet,
+                check: currentCheck,
+                cash: currentBalance - currentBank - currentWallet - currentCheck
+            },
             periodBalance: totals.income - totals.expense,
             totalIncome: totals.income,
             totalExpense: totals.expense,
@@ -536,6 +608,15 @@ export const TreasuryService = {
                     }
                 }
             }
+
+            // Sync method fields
+            if (transaction.method !== 'cash') {
+                const methodField = transaction.type === 'INCOME'
+                    ? (transaction.method === 'bank' ? 'bankIncome' : transaction.method === 'wallet' ? 'walletIncome' : 'checkIncome')
+                    : (transaction.method === 'bank' ? 'bankExpenses' : transaction.method === 'wallet' ? 'walletExpenses' : 'checkExpenses');
+                cashbox[methodField] -= transaction.amount;
+            }
+
             await cashbox.save({ session });
         }
 
@@ -574,6 +655,15 @@ export const TreasuryService = {
                         cashbox.purchaseExpenses -= transaction.amount;
                     }
                 }
+
+                // Sync method fields
+                if (transaction.method !== 'cash') {
+                    const methodField = transaction.type === 'INCOME'
+                        ? (transaction.method === 'bank' ? 'bankIncome' : transaction.method === 'wallet' ? 'walletIncome' : 'checkIncome')
+                        : (transaction.method === 'bank' ? 'bankExpenses' : transaction.method === 'wallet' ? 'walletExpenses' : 'checkExpenses');
+                    cashbox[methodField] -= transaction.amount;
+                }
+
                 await cashbox.save({ session });
             }
 

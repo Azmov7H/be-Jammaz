@@ -45,7 +45,7 @@ const debtSchema = new mongoose.Schema({
     // Origin
     referenceType: {
         type: String,
-        enum: ['Invoice', 'PurchaseOrder', 'Manual'],
+        enum: ['Invoice', 'PurchaseOrder', 'Manual', 'Customer', 'Supplier'],
         required: true
     },
     referenceId: {

@@ -21,7 +21,7 @@ const InvoiceSchema = new mongoose.Schema({
 
     paymentType: {
         type: String,
-        enum: ['cash', 'credit', 'bank'],
+        enum: ['cash', 'credit', 'bank', 'wallet', 'check'],
         default: 'cash'
     },
     paymentStatus: {
@@ -35,7 +35,7 @@ const InvoiceSchema = new mongoose.Schema({
     payments: [{
         amount: { type: Number, required: true },
         date: { type: Date, default: Date.now },
-        method: { type: String, enum: ['cash', 'bank', 'credit_balance'], default: 'cash' },
+        method: { type: String, enum: ['cash', 'bank', 'wallet', 'check', 'credit_balance'], default: 'cash' },
         note: String,
         recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
     }],
@@ -90,6 +90,9 @@ InvoiceSchema.methods.recordPayment = function (amount, method, note, userId, se
 // Indexes for common queries
 InvoiceSchema.index({ date: -1 });
 InvoiceSchema.index({ customer: 1 });
+InvoiceSchema.index({ number: 1 });  // For invoice lookup by number
+InvoiceSchema.index({ paymentStatus: 1, date: -1 });  // For filtered lists
+InvoiceSchema.index({ customer: 1, date: -1 });  // For customer history
 
 InvoiceSchema.virtual('remainingBalance').get(function () {
     return this.total - this.paidAmount;

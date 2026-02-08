@@ -50,6 +50,11 @@ CustomerSchema.methods.getPriceForProduct = function (productId) {
 };
 
 CustomerSchema.index({ balance: 1 });
+CustomerSchema.index({ name: 1 });  // For sorted lookups
+CustomerSchema.index({ name: 'text', phone: 'text' });  // Text search
+CustomerSchema.index({ isActive: 1, balance: 1, createdAt: -1 });  // Optimized debtors query
+CustomerSchema.index({ totalPurchases: -1 }); // For top customers report
+CustomerSchema.index({ lastPurchaseDate: -1 }); // For activity tracking
 
 export default mongoose.models.Customer || mongoose.model('Customer', CustomerSchema);
 

@@ -24,7 +24,7 @@ const SalesReturnSchema = new mongoose.Schema({
     // Refund Method
     refundMethod: {
         type: String,
-        enum: ['cash', 'customerBalance'],
+        enum: ['cash', 'bank', 'wallet', 'customerBalance'],
         required: true,
         default: 'cash'
     },

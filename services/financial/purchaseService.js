@@ -25,38 +25,30 @@ export const PurchaseService = {
             await po.save();
 
             // 3. Treasury & Supplier Balance
-            if (paymentType === 'cash' || paymentType === 'wallet') {
+            if (paymentType !== 'credit') {
                 po.paidAmount = po.totalCost;
                 po.paymentStatus = 'paid';
                 await po.save();
                 await TreasuryService.recordPurchaseExpense(po, userId);
-            } else if ((paymentType === 'credit' || paymentType === 'bank') && po.supplier) {
-                if (paymentType === 'bank') {
-                    po.paidAmount = po.totalCost;
-                    po.paymentStatus = 'paid';
-                    await po.save();
-                } else {
-                    // Credit
-                    po.paidAmount = 0;
-                    po.paymentStatus = 'pending';
-                    await po.save();
-                }
+            } else if (po.supplier) {
+                // Credit
+                po.paidAmount = 0;
+                po.paymentStatus = 'pending';
+                await po.save();
 
-                if (paymentType === 'credit') {
-                    const settings = await InvoiceSettings.getSettings();
-                    const defaultDays = settings.defaultSupplierTerms || 30;
+                const settings = await InvoiceSettings.getSettings();
+                const defaultDays = settings.defaultSupplierTerms || 30;
 
-                    await DebtService.createDebt({
-                        debtorType: 'Supplier',
-                        debtorId: po.supplier,
-                        amount: po.totalCost,
-                        dueDate: po.expectedDate || new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000),
-                        referenceType: 'PurchaseOrder',
-                        referenceId: po._id,
-                        description: `أمر شراء #${po.poNumber}`,
-                        createdBy: userId
-                    });
-                }
+                await DebtService.createDebt({
+                    debtorType: 'Supplier',
+                    debtorId: po.supplier,
+                    amount: po.totalCost,
+                    dueDate: po.expectedDate || new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000),
+                    referenceType: 'PurchaseOrder',
+                    referenceId: po._id,
+                    description: `أمر شراء #${po.poNumber}`,
+                    createdBy: userId
+                });
             }
 
             return po;

@@ -7,6 +7,8 @@ import { SaleService } from './financial/saleService.js';
 import dbConnect from '../lib/db.js';
 import mongoose from 'mongoose';
 import { AppError } from '../middlewares/errorHandler.js';
+import { withTransaction } from '../utils/dbUtils.js';
+import { toIdString } from '../utils/idUtils.js';
 
 export const InvoiceService = {
     async getAll(params) {
@@ -42,74 +44,17 @@ export const InvoiceService = {
     },
 
     async create(data, userId) {
-        await dbConnect();
-        // Transactions are only supported on Replica Sets.
-        // For local development (standalone), we proceed without transactions.
-        let session = null;
-        try {
-            // session = await mongoose.startSession();
-            // session.startTransaction();
-        } catch (error) {
-            // Failed to start session/transaction (likely standalone)
-            session = null;
-        }
-
-        try {
+        return await withTransaction(async (session) => {
             const { items, customerId, customerName, customerPhone, paymentType, tax = 0, dueDate, notes } = data;
 
-            // 1. Calculate Totals & Validate Products (Backend Truth)
-            let subtotal = 0;
-            let totalCost = 0;
-            const processedItems = [];
-
-            for (const item of items) {
-                let productName = item.name;
-                let costPrice = item.buyPrice || 0;
-                let productId = item.productId;
-                const isService = !!item.isService || !productId;
-
-                if (productId && !isService) {
-                    const product = await ProductRepository.findById(productId, session);
-                    if (!product) throw new AppError(`المنتج غير موجود: ${productId}`, 400);
-
-                    productName = product.name;
-                    costPrice = product.buyPrice || 0; // Use current average cost from DB
-                }
-
-                const itemTotal = Number((item.qty * item.unitPrice).toFixed(2));
-                const lineCost = Number((item.qty * costPrice).toFixed(2));
-                const lineProfit = itemTotal - lineCost;
-
-                subtotal += itemTotal;
-                totalCost += lineCost;
-
-                processedItems.push({
-                    productId,
-                    productName,
-                    qty: item.qty,
-                    unitPrice: item.unitPrice,
-                    source: item.source || 'shop',
-                    isService,
-                    total: itemTotal,
-                    costPrice,
-                    profit: lineProfit
-                });
-            }
+            // 1. Calculate Totals & Validate Products
+            const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, session);
 
             const total = Number((subtotal + Number(tax)).toFixed(2));
             const profit = total - totalCost;
 
             // 2. Resolve Customer Info
-            let finalCustomerName = customerName;
-            let finalCustomerPhone = customerPhone;
-
-            if (customerId) {
-                const customer = await CustomerRepository.findById(customerId, session);
-                if (customer) {
-                    finalCustomerName = customer.name;
-                    finalCustomerPhone = customer.phone;
-                }
-            }
+            const { finalName, finalPhone } = await this._resolveCustomerDetails(customerId, customerName, customerPhone, session);
 
             // 3. Create Invoice Record
             const invoiceData = {
@@ -123,11 +68,11 @@ export const InvoiceService = {
                 totalCost,
                 profit,
                 customer: customerId,
-                customerName: finalCustomerName,
-                customerPhone: finalCustomerPhone,
+                customerName: finalName,
+                customerPhone: finalPhone,
                 createdBy: userId,
-                paymentStatus: paymentType === 'cash' ? 'paid' : 'pending',
-                paidAmount: paymentType === 'cash' ? total : 0,
+                paymentStatus: paymentType === 'credit' ? 'pending' : 'paid',
+                paidAmount: paymentType === 'credit' ? 0 : total,
                 notes
             };
 
@@ -136,19 +81,78 @@ export const InvoiceService = {
             // 4. Trigger Side Effects (Stock, Debt, Treasury)
             await SaleService.recordSale(invoice, userId, session);
 
-            // if (session) {
-            //     await session.commitTransaction();
-            //     session.endSession();
-            // }
-
             return invoice;
-        } catch (error) {
-            // if (session) {
-            //     await session.abortTransaction();
-            //     session.endSession();
-            // }
-            throw error;
+        });
+    },
+
+    /**
+     * Internal helper to process and validate items
+     * @private
+     */
+    async _processInvoiceItems(items, session) {
+        let subtotal = 0;
+        let totalCost = 0;
+        const processedItems = [];
+
+        const productIds = items
+            .filter(i => i.productId && !i.isService)
+            .map(i => i.productId);
+
+        const products = productIds.length > 0
+            ? await ProductRepository.findByIds(productIds, session)
+            : [];
+        const productMap = new Map(products.map(p => [toIdString(p), p]));
+
+        for (const item of items) {
+            let productName = item.name;
+            let costPrice = item.buyPrice || 0;
+            let productId = item.productId;
+            const isService = !!item.isService || !productId;
+
+            if (productId && !isService) {
+                const pid = toIdString(productId);
+                const product = productMap.get(pid);
+                if (!product) throw new AppError(`المنتج غير موجود: ${JSON.stringify(productId)}`, 400);
+
+                productName = product.name;
+                costPrice = product.buyPrice || 0;
+            }
+
+            const itemTotal = Number((item.qty * item.unitPrice).toFixed(2));
+            const lineCost = Number((item.qty * costPrice).toFixed(2));
+            const lineProfit = itemTotal - lineCost;
+
+            subtotal += itemTotal;
+            totalCost += lineCost;
+
+            processedItems.push({
+                productId: isService ? undefined : productId,
+                productName,
+                qty: item.qty,
+                unitPrice: item.unitPrice,
+                source: item.source || 'shop',
+                isService,
+                total: itemTotal,
+                costPrice,
+                profit: lineProfit
+            });
         }
+
+        return { processedItems, subtotal, totalCost };
+    },
+
+    /**
+     * Internal helper to resolve customer name/phone
+     * @private
+     */
+    async _resolveCustomerDetails(customerId, providedName, providedPhone, session) {
+        if (!customerId) return { finalName: providedName, finalPhone: providedPhone };
+
+        const customer = await CustomerRepository.findById(customerId, session);
+        return {
+            finalName: customer?.name || providedName,
+            finalPhone: customer?.phone || providedPhone
+        };
     },
 
     async getById(id) {

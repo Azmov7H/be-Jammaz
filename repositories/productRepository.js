@@ -18,5 +18,11 @@ export const ProductRepository = {
 
     async count(query = {}) {
         return await Product.countDocuments(query);
+    },
+
+    async findByIds(ids, session = null) {
+        const query = Product.find({ _id: { $in: ids } });
+        if (session) query.session(session);
+        return query.lean();
     }
 };

@@ -17,7 +17,7 @@ const CashboxDailySchema = new mongoose.Schema({
         default: 0
     },
 
-    // Auto-calculated from transactions
+    // Auto-calculated from transactions (Cash)
     salesIncome: {
         type: Number,
         default: 0,
@@ -29,7 +29,25 @@ const CashboxDailySchema = new mongoose.Schema({
         min: 0
     },
 
-    // Manual entries
+    // Bank transfers
+    openingBankBalance: { type: Number, default: 0 },
+    bankIncome: { type: Number, default: 0, min: 0 },
+    bankExpenses: { type: Number, default: 0, min: 0 },
+    closingBankBalance: { type: Number, default: 0 },
+
+    // Digital wallets
+    openingWalletBalance: { type: Number, default: 0 },
+    walletIncome: { type: Number, default: 0, min: 0 },
+    walletExpenses: { type: Number, default: 0, min: 0 },
+    closingWalletBalance: { type: Number, default: 0 },
+
+    // Checks
+    openingCheckBalance: { type: Number, default: 0 },
+    checkIncome: { type: Number, default: 0, min: 0 },
+    checkExpenses: { type: Number, default: 0, min: 0 },
+    closingCheckBalance: { type: Number, default: 0 },
+
+    // Manual entries (Always assumed cash for physical cashbox simplicity, but can be mixed)
     manualIncome: [{
         amount: {
             type: Number,
@@ -121,11 +139,16 @@ CashboxDailySchema.pre('save', async function () {
     const manualExpensesTotal = this.manualExpenses.reduce((sum, entry) => sum + entry.amount, 0);
 
     // Calculate totals
-    this.totalIncome = this.salesIncome + manualIncomeTotal;
-    this.totalExpenses = this.purchaseExpenses + manualExpensesTotal;
+    this.totalIncome = (this.salesIncome || 0) + (this.bankIncome || 0) + (this.walletIncome || 0) + (this.checkIncome || 0) + manualIncomeTotal;
+    this.totalExpenses = (this.purchaseExpenses || 0) + (this.bankExpenses || 0) + (this.walletExpenses || 0) + (this.checkExpenses || 0) + manualExpensesTotal;
     this.netChange = this.totalIncome - this.totalExpenses;
 
-    // Expected closing balance
+    // Per-method closing balances
+    this.closingBankBalance = (this.openingBankBalance || 0) + (this.bankIncome || 0) - (this.bankExpenses || 0);
+    this.closingWalletBalance = (this.openingWalletBalance || 0) + (this.walletIncome || 0) - (this.walletExpenses || 0);
+    this.closingCheckBalance = (this.openingCheckBalance || 0) + (this.checkIncome || 0) - (this.checkExpenses || 0);
+
+    // Expected closing balance (Total)
     const expectedClosing = this.openingBalance + this.netChange;
 
     // Difference (should be 0 if perfect reconciliation)

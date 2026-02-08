@@ -1,6 +1,7 @@
 import DailySales from '../models/DailySales.js';
 import Invoice from '../models/Invoice.js';
 import Product from '../models/Product.js';
+import { toIdString } from '../utils/idUtils.js';
 
 /**
  * Daily Sales Tracking Service
@@ -141,7 +142,7 @@ export const DailySalesService = {
         sales.forEach(day => {
             day.topProducts.forEach(product => {
                 if (!product.productId) return;
-                const key = product.productId.toString();
+                const key = toIdString(product.productId);
                 if (productMap.has(key)) {
                     const existing = productMap.get(key);
                     existing.quantitySold += product.quantitySold;
@@ -161,7 +162,61 @@ export const DailySalesService = {
         bestSellers.sort((a, b) => b.revenue - a.revenue);
 
         return bestSellers.slice(0, limit);
-    }
+    },
+    /**
+     * Reverse daily sales summary when invoice is cancelled
+     */
+    async reverseDailySales(invoice, userId, session = null) {
+        const startOfDay = new Date(invoice.date);
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const dailySales = await DailySales.findOne({ date: startOfDay }).session(session);
+        if (!dailySales) return null;
+
+        // Update totals
+        dailySales.totalRevenue -= invoice.total;
+        dailySales.totalCost -= (invoice.totalCost || 0);
+        dailySales.invoiceCount -= 1;
+        dailySales.itemsSold -= invoice.items.reduce((sum, item) => sum + item.qty, 0);
+
+        // Remove invoice reference
+        dailySales.invoices = dailySales.invoices.filter(id => id.toString() !== invoice._id.toString());
+
+        // Reverse top products
+        for (const item of invoice.items) {
+            if (item.productId) {
+                const pid = toIdString(item.productId);
+                const existingProduct = dailySales.topProducts.find(
+                    p => p.productId && toIdString(p.productId) === pid
+                );
+
+                if (existingProduct) {
+                    existingProduct.quantitySold -= item.qty;
+                    existingProduct.revenue -= item.total;
+
+                    // Cleanup if quantity becomes 0 or less
+                    if (existingProduct.quantitySold <= 0) {
+                        dailySales.topProducts = dailySales.topProducts.filter(
+                            p => toIdString(p.productId) !== pid
+                        );
+                    }
+                }
+            }
+        }
+
+        if (invoice.paymentType === 'credit') {
+            dailySales.creditSales = (dailySales.creditSales || 0) - invoice.total;
+        } else {
+            dailySales.cashReceived -= invoice.total;
+        }
+
+        // Re-sort top products
+        dailySales.topProducts.sort((a, b) => b.revenue - a.revenue);
+        dailySales.updatedBy = userId;
+
+        await dailySales.save({ session });
+        return dailySales;
+    },
 };
 
 

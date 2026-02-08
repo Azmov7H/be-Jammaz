@@ -2,6 +2,7 @@ import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import PriceHistory from '../models/PriceHistory.js';
 import dbConnect from '../lib/db.js';
+import { toIdString } from '../utils/idUtils.js';
 
 /**
  * Pricing Service
@@ -153,7 +154,7 @@ export const PricingService = {
 
         // Check if custom price already exists
         const existingIndex = customer.customPricing.findIndex(
-            cp => cp.productId.toString() === productId.toString()
+            cp => toIdString(cp.productId) === toIdString(productId)
         );
 
         if (existingIndex !== -1) {
@@ -187,7 +188,7 @@ export const PricingService = {
         }
 
         customer.customPricing = customer.customPricing.filter(
-            cp => cp.productId.toString() !== productId.toString()
+            cp => toIdString(cp.productId) !== toIdString(productId)
         );
 
         await customer.save();

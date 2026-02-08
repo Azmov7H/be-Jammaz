@@ -84,6 +84,7 @@ export const AuthService = {
      * Get current user session
      */
     async getSession(token) {
+        console.log(`[AuthService] getSession checking token: ${!!token}`);
         if (!token) return null;
 
         const decoded = await verifyToken(token);

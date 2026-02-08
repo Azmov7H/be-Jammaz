@@ -65,6 +65,7 @@ const ProductSchema = new mongoose.Schema({
 // Indexes
 ProductSchema.index({ category: 1, isActive: 1 });
 ProductSchema.index({ stockQty: 1 });
+ProductSchema.index({ warehouseQty: 1, shopQty: 1 }); // Optimized for quantity checks
 ProductSchema.index({ createdAt: -1 });
 
 // Middleware to sync stockQty

@@ -16,8 +16,9 @@ export const AuthController = {
             secure: process.env.NODE_ENV === 'production',
             maxAge: 60 * 60 * 24 * 1000,
             path: '/',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            sameSite: 'lax', // Standard CSRF protection
         });
+        console.log(`[Auth] Cookie 'token' set for user: ${email}`);
 
         return result.user;
     },
@@ -29,6 +30,7 @@ export const AuthController = {
 
     async getSession(req) {
         const token = req.cookies.token;
+        console.log(`[AuthController] getSession hit. Cookie token present: ${!!token}`);
         return await AuthService.getSession(token);
     },
 
@@ -41,7 +43,7 @@ export const AuthController = {
             secure: process.env.NODE_ENV === 'production',
             maxAge: 60 * 60 * 24 * 1000,
             path: '/',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            sameSite: 'lax',
         });
 
         return result.user;

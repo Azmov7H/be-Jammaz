@@ -4,13 +4,13 @@ import { z } from 'zod';
 import { AppError } from '../middlewares/errorHandler.js';
 
 const invoiceItemSchema = z.object({
-    productId: z.string().optional(),
+    productId: z.string().optional().nullable(),
     name: z.string().min(1),
-    qty: z.number().min(0.01),
-    unitPrice: z.number().min(0),
+    qty: z.coerce.number().min(0.01),
+    unitPrice: z.coerce.number().min(0),
     isService: z.boolean().default(false),
     source: z.enum(['shop', 'warehouse']).default('shop'),
-    buyPrice: z.number().optional() // Optional, but if provided should be verified
+    buyPrice: z.coerce.number().optional()
 });
 
 const createInvoiceSchema = z.object({
@@ -18,10 +18,11 @@ const createInvoiceSchema = z.object({
     customerId: z.string().optional().nullable(),
     customerName: z.string().optional(),
     customerPhone: z.string().optional(),
-    paymentType: z.enum(['cash', 'credit', 'bank']),
-    tax: z.number().default(0),
-    dueDate: z.string().or(z.date()).optional(),
-    notes: z.string().optional()
+    paymentType: z.enum(['cash', 'credit', 'bank', 'wallet', 'check']),
+    tax: z.coerce.number().default(0),
+    dueDate: z.string().or(z.date()).optional().nullable(),
+    notes: z.string().optional(),
+    shippingCompany: z.string().optional()
 });
 
 export const InvoiceController = {

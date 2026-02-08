@@ -51,4 +51,18 @@ router.get('/reports/financial', routeHandler(async (req) => {
     return await ReportingService.getFinancialReport(startDate, endDate);
 }));
 
+router.get('/reports/customer-profit', routeHandler(async (req) => {
+    const { startDate, endDate } = req.query;
+    return await ReportingService.getCustomerProfitReport(startDate, endDate);
+}));
+
+router.get('/reports/price-history', routeHandler(async (req) => {
+    const { productId } = req.query;
+    return await ReportingService.getPriceHistory(productId);
+}));
+
+router.get('/reports/price-history/:productId', routeHandler(async (req) => {
+    return await ReportingService.getPriceHistory(req.params.productId);
+}));
+
 export default router;

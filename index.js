@@ -24,6 +24,10 @@ import dailySalesRoutes from './routes/dailySalesRoutes.js';
 import accountingRoutes from './routes/accountingRoutes.js';
 import pricingRoutes from './routes/pricingRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
+import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
+import mongoSanitize from 'express-mongo-sanitize';
+import hpp from 'hpp';
 
 
 
@@ -37,6 +41,28 @@ import settingsRoutes from './routes/settingsRoutes.js';
 
 
 const app = express();
+app.set('trust proxy', 1);
+
+// Security Headers
+app.use(helmet());
+
+// NoSQL Injection Protection
+app.use(mongoSanitize());
+
+// HTTP Parameter Pollution Protection
+app.use(hpp());
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per window
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many requests from this IP, please try again after 15 minutes.' }
+});
+
+app.use('/api/', limiter);
+
 const PORT = process.env.PORT || 5000;
 
 // Middleware

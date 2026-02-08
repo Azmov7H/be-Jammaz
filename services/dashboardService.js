@@ -147,7 +147,7 @@ export const DashboardService = {
             Invoice.aggregate([{ $group: { _id: null, total: { $sum: "$total" } } }]),
             Invoice.find().sort({ createdAt: -1 }).limit(5).populate('createdBy', 'name'),
             StockMovement.aggregate([
-                { $match: { type: 'OUT_SALE' } },
+                { $match: { type: 'SALE' } },
                 { $group: { _id: "$productId", totalQty: { $sum: "$quantity" } } },
                 { $sort: { totalQty: -1 } },
                 { $limit: 5 },
@@ -192,7 +192,7 @@ export const DashboardService = {
         // For now, let's just get top 2 selling products and suggest them.
 
         const topSelling = await StockMovement.aggregate([
-            { $match: { type: 'OUT_SALE' } },
+            { $match: { type: 'SALE' } },
             { $group: { _id: "$productId", totalQty: { $sum: "$quantity" } } },
             { $sort: { totalQty: -1 } },
             { $limit: 2 },
@@ -217,7 +217,7 @@ export const DashboardService = {
         // Since we don't track total sales in Product, we rely on StockMovement for velocity.
 
         const fastMovers = await StockMovement.aggregate([
-            { $match: { type: 'OUT_SALE' } },
+            { $match: { type: 'SALE' } },
             { $group: { _id: "$productId", totalQty: { $sum: "$quantity" } } },
             { $sort: { totalQty: -1 } },
             { $limit: 5 },

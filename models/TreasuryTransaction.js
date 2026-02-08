@@ -38,6 +38,11 @@ const TreasuryTransactionSchema = new mongoose.Schema({
         type: Date,
         default: Date.now
     },
+    method: {
+        type: String,
+        enum: ['cash', 'bank', 'wallet', 'check', 'adjustment'],
+        default: 'cash'
+    },
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
@@ -49,6 +54,11 @@ const TreasuryTransactionSchema = new mongoose.Schema({
 if (mongoose.models && !mongoose.models.UnifiedCollection) {
     mongoose.model('UnifiedCollection', new mongoose.Schema({}, { strict: false }), 'customers');
 }
+
+// Compound indexes for dashboard and report queries
+TreasuryTransactionSchema.index({ type: 1, date: -1 });
+TreasuryTransactionSchema.index({ type: 1, referenceType: 1, date: -1 });
+TreasuryTransactionSchema.index({ date: -1 });
 
 export default mongoose.models.TreasuryTransaction || mongoose.model('TreasuryTransaction', TreasuryTransactionSchema);
 

@@ -3,6 +3,7 @@ import SalesReturn from '../../models/SalesReturn.js';
 import Customer from '../../models/Customer.js';
 import { StockService } from '../stockService.js';
 import { TreasuryService } from '../treasuryService.js';
+import { toIdString } from '../../utils/idUtils.js';
 
 /**
  * Return Service
@@ -64,8 +65,8 @@ export const ReturnService = {
             // 1. Update Original Invoice items
             invoice.items = invoice.items.map(invItem => {
                 const retItem = returnItems.find(r =>
-                    (r.invoiceItemId && r.invoiceItemId.toString() === invItem._id.toString()) ||
-                    (r.productId && invItem.productId && r.productId.toString() === invItem.productId.toString())
+                    (r.invoiceItemId && toIdString(r.invoiceItemId) === toIdString(invItem._id)) ||
+                    (r.productId && invItem.productId && toIdString(r.productId) === toIdString(invItem.productId))
                 );
 
                 if (retItem) {

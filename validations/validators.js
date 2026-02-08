@@ -17,7 +17,7 @@ export const userSchema = z.object({
     name: z.string().min(2, 'الاسم يجب أن يكون حرفين على الأقل'),
     email: z.string().email('البريد الإلكتروني غير صالح'),
     password: z.string().min(6, 'كلمة المرور يجب أن تكون 6 أحرف على الأقل'),
-    role: z.enum(['owner', 'manager', 'accountant', 'sales', 'warehouse', 'viewer'], {
+    role: z.enum(['owner', 'manager', 'accountant', 'sales', 'warehouse', 'viewer', 'cashier'], {
         errorMap: () => ({ message: 'الدور الوظيفي غير صالح' })
     }),
 });
@@ -94,10 +94,10 @@ export const supplierSchema = z.object({
 
 export const invoiceSchema = z.object({
     items: z.array(z.object({
-        productId: z.string().nullable().optional(),
-        qty: z.coerce.number().positive(),
-        unitPrice: z.coerce.number().positive(),
+        productId: z.string().optional().nullable(),
         name: z.string().optional(),
+        qty: z.coerce.number().min(0.01),
+        unitPrice: z.coerce.number().min(0),
         isService: z.boolean().optional(),
         source: z.enum(['shop', 'warehouse']).default('shop')
     })).min(1, 'السلة فارغة'),
@@ -105,8 +105,9 @@ export const invoiceSchema = z.object({
     customerName: z.string().optional(),
     customerPhone: z.string().optional(),
     tax: z.coerce.number().default(0),
-    paymentType: z.enum(['cash', 'credit', 'bank']).default('cash'),
-    dueDate: z.string().optional().nullable() // Date string
+    paymentType: z.enum(['cash', 'credit', 'bank', 'wallet', 'check']).default('cash'),
+    dueDate: z.string().optional().nullable(),
+    shippingCompany: z.string().optional()
 }).refine(data => data.customerId || (data.customerName && data.customerPhone) || (data.paymentType === 'cash'), {
     message: "يجب تحديد عميل للمبيعات الآجلة أو إدخال اسم ورقم هاتف للعملاء الجدد"
 });
@@ -120,13 +121,13 @@ export const purchaseOrderSchema = z.object({
     })).min(1, 'قائمة الأصناف فارغة'),
     notes: z.string().optional(),
     expectedDate: z.string().optional().nullable(),
-    paymentType: z.enum(['cash', 'bank', 'bank_transfer', 'credit', 'wallet', 'cash_wallet']).default('cash')
+    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).default('cash')
 });
 
 export const poReceiveSchema = z.object({
     id: z.string(),
     status: z.literal('RECEIVED'),
-    paymentType: z.enum(['cash', 'bank', 'bank_transfer', 'credit', 'wallet', 'cash_wallet']).default('cash')
+    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).default('cash')
 });
 
 export const expenseSchema = z.object({

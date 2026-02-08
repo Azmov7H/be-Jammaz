@@ -8,6 +8,8 @@ import { DailySalesService } from '../dailySalesService.js';
 import { DebtService } from './debtService.js';
 import { LogService } from '../logService.js';
 import InvoiceSettings from '../../models/InvoiceSettings.js';
+import { withTransaction } from '../../utils/dbUtils.js';
+import mongoose from 'mongoose';
 
 /**
  * Sale Service
@@ -36,16 +38,21 @@ export const SaleService = {
 
             // 3. Update Customer Balance & Create Debt Record
             if (invoice.customer && (invoice.paymentType === 'credit' || invoice.paymentType === 'partial')) {
-                const remainingDebt = invoice.total - invoice.paidAmount;
+                const remainingDebt = invoice.total - (invoice.paidAmount || 0);
                 if (remainingDebt > 0) {
                     const settings = await InvoiceSettings.getSettings();
                     const defaultDays = settings.defaultCustomerTerms || 15;
+
+                    // Ensure dueDate is valid or use fallback
+                    let finalDueDate = (invoice.dueDate && invoice.dueDate !== "")
+                        ? new Date(invoice.dueDate)
+                        : new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000);
 
                     await DebtService.createDebt({
                         debtorType: 'Customer',
                         debtorId: invoice.customer,
                         amount: remainingDebt,
-                        dueDate: invoice.dueDate || new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000),
+                        dueDate: finalDueDate,
                         referenceType: 'Invoice',
                         referenceId: invoice._id,
                         description: `فاتورة مبيعات #${invoice.number}`,
@@ -84,54 +91,45 @@ export const SaleService = {
      * Reverse a Sale (Delete Invoice Logic)
      */
     async reverseSale(invoiceId, userId) {
-        await dbConnect();
-        try {
-            const invoice = await Invoice.findById(invoiceId).populate('items.productId');
+        return await withTransaction(async (session) => {
+            const invoice = await Invoice.findById(invoiceId).populate('items.productId').session(session);
             if (!invoice) throw new Error('الفاتورة غير موجودة');
 
             // 1. Reverse Stock
-            for (const item of invoice.items) {
-                if (item.isService || !item.productId) continue;
-
-                const product = await Product.findById(item.productId);
-                if (product) {
-                    product.shopQty += item.qty;
-                    product.stockQty = (product.warehouseQty || 0) + product.shopQty;
-                    await product.save();
-
-                    const StockMovement = (await import('../../models/StockMovement.js')).default;
-                    await StockMovement.create([{
-                        productId: product._id,
-                        type: 'IN',
-                        qty: item.qty,
-                        note: `إلغاء فاتورة #${invoice.number}`,
-                        refId: invoice._id,
-                        createdBy: userId,
-                        snapshot: {
-                            warehouseQty: product.warehouseQty,
-                            shopQty: product.shopQty
-                        }
-                    }]);
-                }
+            const trackableItems = invoice.items.filter(item => !item.isService && item.productId);
+            if (trackableItems.length > 0) {
+                await StockService.increaseStockForReturn(
+                    trackableItems,
+                    invoice._id,
+                    userId,
+                    session,
+                    `إلغاء فاتورة #${invoice.number}`
+                );
             }
 
             // 2. Reverse Treasury Transactions
-            await TreasuryService.deleteTransactionByRef('Invoice', invoice._id);
+            await TreasuryService.deleteTransactionByRef('Invoice', invoice._id, session);
 
             // 3. Update Customer Balance & Debt
             if (invoice.customer) {
-                const remainingDebt = invoice.total - invoice.paidAmount;
-                if (remainingDebt > 0) {
-                    const Debt = (await import('../../models/Debt.js')).default;
-                    const debt = await Debt.findOne({ referenceType: 'Invoice', referenceId: invoice._id });
-                    if (debt) {
-                        await DebtService.deleteDebt(debt._id);
-                    }
+                const Debt = (await import('../../models/Debt.js')).default;
+                const debt = await Debt.findOne({ referenceType: 'Invoice', referenceId: invoice._id }).session(session);
+                if (debt) {
+                    await DebtService.deleteDebt(debt._id, session);
                 }
             }
 
-            // 4. Delete Invoice
-            await invoice.deleteOne();
+            // 4. Daily Sales & Customer purchases
+            await DailySalesService.reverseDailySales(invoice, userId, session);
+
+            if (invoice.customer) {
+                await Customer.findByIdAndUpdate(invoice.customer, {
+                    $inc: { totalPurchases: -invoice.total }
+                }).session(session);
+            }
+
+            // 5. Delete Invoice
+            await invoice.deleteOne({ session });
 
             // 5. Logging
             await LogService.logAction({
@@ -139,13 +137,11 @@ export const SaleService = {
                 action: 'REVERSE_INVOICE',
                 entity: 'Invoice',
                 entityId: invoice._id,
-                note: `Invoice #${invoice.number} cancelled and reversed`
-            });
+                note: `Invoice #${invoice.number} cancelled and reversed (Atomic)`
+            }, session);
 
             return { success: true };
-        } catch (error) {
-            throw error;
-        }
+        });
     }
 };
 

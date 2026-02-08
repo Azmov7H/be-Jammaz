@@ -85,7 +85,7 @@ export const CustomerService = {
                     type: 'ADJUSTMENT',
                     debitAccount: 'Accounts Receivable', // Or specific Customer Account? Usually AR.
                     creditAccount: 'Opening Balance Equity',
-                    amount: initialBalance,
+                    amount: parseFloat(openingBalance),
                     description: `رصيد افتتاحي للعميل: ${customer.name}`,
                     refType: 'Manual',
                     refId: customer._id

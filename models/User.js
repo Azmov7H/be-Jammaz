@@ -15,11 +15,11 @@ const UserSchema = new mongoose.Schema({
     },
     password: {
         type: String,
-        required: [true, 'Please provide a password'],
+        required: false, // Optional for OAuth users
     },
     role: {
         type: String,
-        enum: ['owner', 'manager', 'cashier', 'warehouse', 'viewer'],
+        enum: ['owner', 'manager', 'cashier', 'warehouse', 'viewer', 'accountant', 'sales'],
         default: 'cashier',
     },
     picture: String,

@@ -153,17 +153,17 @@ router.get('/treasury', routeHandler(async (req) => {
 // NEW: Record manual transaction
 router.post('/transaction', routeHandler(async (req) => {
     const { TreasuryService } = await import('../services/treasuryService.js');
-    const { amount, description, type, category, date } = req.body;
+    const { amount, description, type, category, date, method } = req.body;
 
     if (type === 'INCOME') {
-        return await TreasuryService.addManualIncome(date || new Date(), amount, description, req.user._id);
+        return await TreasuryService.addManualIncome(date || new Date(), amount, description, req.user._id, method || 'cash');
     } else {
-        return await TreasuryService.addManualExpense(date || new Date(), amount, description, category || 'other', req.user._id);
+        return await TreasuryService.addManualExpense(date || new Date(), amount, description, category || 'other', req.user._id, method || 'cash');
     }
 }));
 
 // NEW: Undo transaction
-router.delete('/transaction/:id', roleMiddleware(['admin']), routeHandler(async (req) => {
+router.delete('/transaction/:id', roleMiddleware(['owner']), routeHandler(async (req) => {
     const { TreasuryService } = await import('../services/treasuryService.js');
     return await TreasuryService.undoTransaction(req.params.id, req.user._id);
 }));
