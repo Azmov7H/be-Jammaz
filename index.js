@@ -92,10 +92,21 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(morgan('dev'));
 
-// Database Connection
-dbConnect().catch(err => {
-    // Error is already logged in lib/db.js
-});
+// Database Connection and Server Start
+const startServer = async () => {
+    try {
+        await dbConnect();
+
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`✅ Server is running on http://127.0.0.1:${PORT}`);
+        });
+    } catch (err) {
+        console.error('❌ Failed to connect to database. Server not started:', err.message);
+        process.exit(1);
+    }
+};
+
+startServer();
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -137,8 +148,3 @@ app.get('/', (req, res) => {
 // Error Handler
 import { errorHandler } from './middlewares/errorHandler.js';
 app.use(errorHandler);
-
-// Start Server
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is running on http://127.0.0.1:${PORT}`);
-});
