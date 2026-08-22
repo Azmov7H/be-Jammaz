@@ -4,9 +4,14 @@
     "description": "Express backend for transfer application",
     "main": "index.js",
     "type": "module",
+    "engines": {
+        "node": ">=22"
+    },
     "scripts": {
         "start": "node index.js",
-        "dev": "nodemon index.js"
+        "dev": "nodemon index.js",
+        "test": "vitest run",
+        "test:watch": "vitest"
     },
     "dependencies": {
         "bcryptjs": "^3.0.3",
