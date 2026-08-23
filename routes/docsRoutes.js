@@ -11,14 +11,15 @@ const apiDocs = {
         success: "boolean",
         data: "any",
         message: "string | null",
-        error: "string (only if success is false)"
+        code: "string (stable machine-readable code, on errors)",
+        details: "object (field-level validation info, 400s only)",
+        timestamp: "ISO string"
     },
     resources: {
         auth: {
             prefix: "/auth",
             endpoints: [
                 { method: "POST", path: "/login", description: "Login user" },
-                { method: "POST", path: "/register", description: "Register new user" },
                 { method: "GET", path: "/me", description: "Get current user profile" }
             ]
         },
@@ -38,8 +39,8 @@ const apiDocs = {
                 { method: "POST", path: "/move", description: "Move stock manually" }
             ]
         },
-        purchases: {
-            prefix: "/purchases",
+        purchaseOrders: {
+            prefix: "/purchase-orders", // /purchases is a deprecated alias
             endpoints: [
                 { method: "GET", path: "/", description: "List purchase orders" },
                 { method: "POST", path: "/", description: "Create purchase order" }

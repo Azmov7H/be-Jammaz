@@ -64,18 +64,27 @@ router.get('/debts', routeHandler(async (req) => {
     return await DebtService.getDebts(req.query, { page: req.query.page, limit: req.query.limit });
 }));
 
-// Get Installments for Debt (legacy path)
+// Canonical: Get Installments for Debt
 router.get('/debts/:debtId/installments', routeHandler(async (req) => {
     return await DebtService.getInstallments(req.params.debtId);
 }));
 
-// Create Installment Plan
-router.post('/installments', routeHandler(async (req) => {
+// Canonical: Create Installment Plan for a specific debt
+router.post('/debts/:debtId/installments', routeHandler(async (req) => {
+    return await DebtService.createInstallmentPlan({ ...req.body, debtId: req.params.debtId, userId: req.user._id });
+}));
+
+const deprecated = (_req, res, next) => {
+    res.set('Deprecation', 'true');
+    next();
+};
+
+// DEPRECATED legacy paths — kept until frontend migrates to /debts/:debtId/installments
+router.post('/installments', deprecated, routeHandler(async (req) => {
     return await DebtService.createInstallmentPlan({ ...req.body, userId: req.user._id });
 }));
 
-// Get Installments for Debt
-router.get('/installments/:debtId', routeHandler(async (req) => {
+router.get('/installments/:debtId', deprecated, routeHandler(async (req) => {
     return await DebtService.getInstallments(req.params.debtId);
 }));
 
