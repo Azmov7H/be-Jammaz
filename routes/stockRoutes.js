@@ -26,13 +26,13 @@ router.get('/status', routeHandler(async () => {
     return await StockService.listStatus();
 }));
 
-router.post('/transfer', routeHandler(async (req) => {
+router.post('/transfer', roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
     const { productId, from, to, qty, quantity, note } = req.body;
     return await StockService.transferStock(productId, from, to, qty || quantity, note, req.user._id);
 }));
 
 // Alias for stock movements for frontend compatibility
-router.post('/move', routeHandler(async (req) => {
+router.post('/move', roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
     const { items, productId, qty, type, note, refId } = req.body;
 
     if (items && Array.isArray(items) && items.length > 0) {

@@ -1,18 +1,30 @@
 import User from '../models/User.js';
 import dbConnect from '../lib/db.js';
 import bcrypt from 'bcryptjs';
-import { NotFoundError, ConflictError } from '../lib/errors.js';
+import { NotFoundError, ConflictError, ForbiddenError } from '../lib/errors.js';
+
+// T-ACL-01: explicit field allowlist — mass assignment of arbitrary
+// schema fields (e.g. tokenVersion) via body spread is not possible.
+const ALLOWED_FIELDS = ['name', 'email', 'password', 'role', 'picture', 'isActive'];
+
+function pickAllowed(data) {
+    const out = {};
+    for (const key of ALLOWED_FIELDS) {
+        if (data[key] !== undefined) out[key] = data[key];
+    }
+    return out;
+}
 
 export const UserService = {
     async getAll() {
         await dbConnect();
-        const users = await User.find({}, '-password').sort({ createdAt: -1 });
+        const users = await User.find({}, '-password -tokenVersion').sort({ createdAt: -1 });
         return { users };
     },
 
     async getById(id) {
         await dbConnect();
-        const user = await User.findById(id).select('-password');
+        const user = await User.findById(id).select('-password -tokenVersion');
         if (!user) {
             throw new NotFoundError('User not found');
         }
@@ -26,51 +38,94 @@ export const UserService = {
         if (existing) {
             throw new ConflictError('البريد الإلكتروني مستخدم بالفعل');
         }
+        if (!data.password) {
+            throw new ForbiddenError('كلمة المرور مطلوبة');
+        }
 
         const hashedPassword = await bcrypt.hash(data.password, 10);
         const newUser = await User.create({
-            ...data,
+            ...pickAllowed(data),
             password: hashedPassword
         });
 
-        const { password, ...userWithoutPass } = newUser.toObject();
-        return userWithoutPass;
+        const { password, tokenVersion, ...safeUser } = newUser.toObject();
+        return safeUser;
     },
 
-    async update(id, data) {
+    async update(id, data, actor) {
         await dbConnect();
+        const target = await User.findById(id).select('+tokenVersion');
+        if (!target) throw new NotFoundError('User not found');
 
-        // Check if email is taken by another user
-        if (data.email) {
-            const existing = await User.findOne({ email: data.email, _id: { $ne: id } });
-            if (existing) {
-                throw new ConflictError('البريد الإلكتروني مستخدم بالفعل');
+        // Nobody edits their own role (self-promotion/demotion path).
+        if (actor && String(actor._id) === id && data.role && data.role !== target.role) {
+            throw new ForbiddenError('لا يمكنك تعديل صلاحيات حسابك الخاص');
+        }
+
+        // Defense in depth: only owner may grant the owner role, regardless
+        // of what a future route gate allows.
+        if (data.role === 'owner' && actor?.role !== 'owner') {
+            throw new ForbiddenError('تعيين دور المالك يتطلب صلاحية المالك');
+        }
+
+        const updateData = pickAllowed(data);
+        if (updateData.password !== undefined) {
+            if (updateData.password === null || updateData.password === '') {
+                delete updateData.password;
+            } else {
+                updateData.password = await bcrypt.hash(updateData.password, 10);
             }
         }
-
-        const updateData = { ...data };
-        if (data.password) {
-            updateData.password = await bcrypt.hash(data.password, 10);
-        } else {
-            delete updateData.password;
+        if (updateData.email) {
+            const existing = await User.findOne({ email: updateData.email, _id: { $ne: id } });
+            if (existing) throw new ConflictError('البريد الإلكتروني مستخدم بالفعل');
         }
 
-        const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true }).select('-password');
-        if (!updatedUser) {
-            throw new NotFoundError('User not found');
+        // Last-owner guard on deactivation.
+        if (updateData.isActive === false && target.role === 'owner' && target.isActive !== false) {
+            await assertNotLastOwner(id);
         }
+
+        // Invalidate existing sessions when privileges or status change.
+        if (
+            (updateData.role && updateData.role !== target.role) ||
+            updateData.isActive === false ||
+            updateData.password
+        ) {
+            updateData.tokenVersion = (target.tokenVersion ?? 0) + 1;
+        }
+
+        const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true })
+            .select('-password -tokenVersion');
         return updatedUser;
     },
 
-    async delete(id) {
+    async delete(id, actor) {
         await dbConnect();
-        const deletedUser = await User.findByIdAndDelete(id);
-        if (!deletedUser) {
-            throw new NotFoundError('User not found');
+
+        if (actor && String(actor._id) === id) {
+            throw new ConflictError('لا يمكنك حذف حسابك الخاص');
         }
-        return { message: 'Use deleted successfully' };
+
+        const target = await User.findById(id);
+        if (!target) throw new NotFoundError('User not found');
+
+        if (target.role === 'owner') {
+            await assertNotLastOwner(id);
+        }
+
+        await User.findByIdAndDelete(id);
+        return { message: 'User deleted successfully' };
     }
 };
 
-
-
+async function assertNotLastOwner(excludeId) {
+    const activeOwners = await User.countDocuments({
+        role: 'owner',
+        isActive: { $ne: false },
+        _id: { $ne: excludeId }
+    });
+    if (activeOwners === 0) {
+        throw new ConflictError('لا يمكن إزالة آخر مالك نشط في النظام');
+    }
+}

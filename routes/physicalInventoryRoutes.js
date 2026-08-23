@@ -30,7 +30,7 @@ router.post('/', roleMiddleware(['owner', 'manager']), routeHandler(async (req) 
 }));
 
 // Update actual quantities
-router.patch('/:id', routeHandler(async (req) => {
+router.patch('/:id', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { itemUpdates } = req.body;
     return await PhysicalInventoryService.updateActualQuantities(req.params.id, itemUpdates, req.user._id);
 }));

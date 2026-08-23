@@ -41,13 +41,13 @@ router.get('/transactions', routeHandler(async (req) => {
 }));
 
 // Add manual income
-router.post('/manual-income', routeHandler(async (req) => {
+router.post('/manual-income', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { amount, reason, date } = req.body;
     return await TreasuryService.addManualIncome(date || new Date(), amount, reason, req.user._id);
 }));
 
 // Add manual expense
-router.post('/manual-expense', routeHandler(async (req) => {
+router.post('/manual-expense', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { amount, reason, category, date } = req.body;
     return await TreasuryService.addManualExpense(date || new Date(), amount, reason, category, req.user._id);
 }));
