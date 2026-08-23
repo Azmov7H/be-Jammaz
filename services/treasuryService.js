@@ -255,22 +255,27 @@ export const TreasuryService = {
             cashbox = created[0];
         }
 
-        // Update with increments
+        // T-DB-06: atomic increment — no read-modify-write on balances.
         const allowedFields = [
             'salesIncome', 'purchaseExpenses',
             'bankIncome', 'bankExpenses',
             'walletIncome', 'walletExpenses',
             'checkIncome', 'checkExpenses',
-            'adjustment' // Added but typically not incremented here
+            'adjustment'
         ];
 
+        const incUpdate = {};
         for (const [field, amount] of Object.entries(updates)) {
-            if (allowedFields.includes(field) && amount) {
-                cashbox[field] = (cashbox[field] || 0) + amount;
-            }
+            if (allowedFields.includes(field) && amount) incUpdate[field] = amount;
         }
 
-        await cashbox.save({ session });
+        if (Object.keys(incUpdate).length > 0) {
+            cashbox = await CashboxDaily.findOneAndUpdate(
+                { _id: cashbox._id },
+                { $inc: incUpdate },
+                { new: true, session }
+            );
+        }
         return cashbox;
     },
 

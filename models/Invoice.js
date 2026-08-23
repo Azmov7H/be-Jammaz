@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { BadRequestError } from '../lib/errors.js';
 
 const InvoiceSchema = new mongoose.Schema({
     number: { type: String, required: true, unique: true },
@@ -63,28 +64,29 @@ const InvoiceSchema = new mongoose.Schema({
 
 // Method to record payment
 InvoiceSchema.methods.recordPayment = function (amount, method, note, userId, session = null) {
-    this.payments.push({
-        amount,
-        method,
-        note,
-        recordedBy: userId,
-        date: new Date()
-    });
-
-    this.paidAmount = (this.paidAmount || 0) + amount;
-
-    // Update status
-    if (this.paidAmount >= this.total) {
-        this.paymentStatus = 'paid';
-        // Cap paid amount if it slightly exceeds due to rounding
-        if (this.paidAmount > this.total) this.paidAmount = this.total;
-    } else if (this.paidAmount > 0) {
-        this.paymentStatus = 'partial';
-    } else {
-        this.paymentStatus = 'pending';
+    // T-DB-06: negative/zero amounts rejected at entry; the mutation is a
+    // single atomic pipeline update — no read-modify-write race.
+    if (!(amount > 0)) {
+        throw new BadRequestError('قيمة الدفعة يجب أن تكون أكبر من صفر');
     }
+    const payment = { amount, method, note, recordedBy: userId, date: new Date() };
 
-    return this.save({ session });
+    return this.constructor.findOneAndUpdate(
+        { _id: this._id },
+        [
+            { $set: {
+                payments: { $concatArrays: [{ $ifNull: ['$payments', []] }, [payment]] },
+                paidAmount: { $min: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, amount] }, '$total'] }
+            } },
+            { $set: {
+                paymentStatus: {
+                    $cond: [{ $gte: ['$paidAmount', '$total'] }, 'paid',
+                        { $cond: [{ $gt: ['$paidAmount', 0] }, 'partial', 'pending'] }]
+                }
+            } }
+        ],
+        { new: true, session }
+    );
 };
 
 // Indexes for common queries
