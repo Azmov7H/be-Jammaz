@@ -1,11 +1,6 @@
 import { AuthService } from '../services/authService.js';
 import { verifyToken } from '../lib/auth.js';
-import { z } from 'zod';
-
-const loginSchema = z.object({
-    email: z.string().email('البريد الإلكتروني غير صالح'),
-    password: z.string().min(1, 'كلمة المرور مطلوبة')
-});
+import { loginSchema } from '../validations/index.js';
 
 const isProd = process.env.NODE_ENV === 'production';
 const baseCookie = {

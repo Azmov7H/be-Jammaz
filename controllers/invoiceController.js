@@ -1,33 +1,11 @@
 import { InvoiceService } from '../services/invoiceService.js';
 import { ReturnService } from '../services/financial/returnService.js';
-import { z } from 'zod';
+import { invoiceSchema } from '../validations/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
-
-const invoiceItemSchema = z.object({
-    productId: z.string().optional().nullable(),
-    name: z.string().min(1),
-    qty: z.coerce.number().min(0.01),
-    unitPrice: z.coerce.number().min(0),
-    isService: z.boolean().default(false),
-    source: z.enum(['shop', 'warehouse']).default('shop'),
-    buyPrice: z.coerce.number().optional()
-});
-
-const createInvoiceSchema = z.object({
-    items: z.array(invoiceItemSchema).min(1),
-    customerId: z.string().optional().nullable(),
-    customerName: z.string().optional(),
-    customerPhone: z.string().optional(),
-    paymentType: z.enum(['cash', 'credit', 'bank', 'wallet', 'check']),
-    tax: z.coerce.number().default(0),
-    dueDate: z.string().or(z.date()).optional().nullable(),
-    notes: z.string().optional(),
-    shippingCompany: z.string().optional()
-});
 
 export const InvoiceController = {
     async create(req) {
-        const data = createInvoiceSchema.parse(req.body);
+        const data = invoiceSchema.parse(req.body);
         return await InvoiceService.create(data, req.user._id);
     },
 
