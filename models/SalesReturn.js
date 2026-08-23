@@ -50,7 +50,6 @@ const SalesReturnSchema = new mongoose.Schema({ // T-DB-01 indexes at bottom
 }, { timestamps: true });
 
 if (mongoose.models.SalesReturn) {
-    delete mongoose.models.SalesReturn;
 }
 export default mongoose.model('SalesReturn', SalesReturnSchema);
 

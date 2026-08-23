@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
 
 const SupplierSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    phone: String,
-    address: String,
+    name: { type: String, required: true, maxlength: 200 },
+    phone: { type: String, maxlength: 30 }, // T-DB-08
+    address: { type: String, maxlength: 500 },
     products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
 
     // Financials

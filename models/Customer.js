@@ -1,10 +1,10 @@
 import mongoose from 'mongoose';
 
 const CustomerSchema = new mongoose.Schema({
-    name: { type: String, required: true },
+    name: { type: String, required: true, maxlength: 200 },
     phone: { type: String, required: true, unique: true },
-    address: String,
-    notes: String,
+    address: { type: String, maxlength: 500 }, // T-DB-08
+    notes: { type: String, maxlength: 2000 },
     shippingCompany: String,
     priceType: {
         type: String,
