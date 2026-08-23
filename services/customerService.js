@@ -1,4 +1,5 @@
 import Customer from '../models/Customer.js';
+import { withTransaction } from '../utils/dbUtils.js';
 import { CACHE_TAGS } from '../lib/cache.js';
 import dbConnect from '../lib/db.js';
 import { NotFoundError, ConflictError } from '../lib/errors.js';
@@ -43,7 +44,6 @@ export const CustomerService = {
     async create(data) {
         await dbConnect();
 
-        // Extract opening balance data
         const { openingBalance, openingBalanceType, ...customerData } = data;
 
         const existing = await Customer.findOne({ phone: customerData.phone });
@@ -51,17 +51,18 @@ export const CustomerService = {
             throw new ConflictError('رقم الهاتف مستخدم بالفعل لعميل آخر');
         }
 
-        // Initialize credit balance (pre-paid)
         let initialCreditBalance = 0;
         if (openingBalance && openingBalance > 0 && openingBalanceType === 'credit') {
             initialCreditBalance = parseFloat(openingBalance);
         }
 
-        const customer = await Customer.create({
+        // T-BIZ-03: customer + debt + accounting entry all-or-nothing
+        return withTransaction(async (session) => {
+        const customer = await Customer.create([{
             ...customerData,
             balance: 0,
             creditBalance: initialCreditBalance
-        });
+        }], { session }).then((r) => r[0]);
 
         // Handle Opening Balance Effects
         if (openingBalance && openingBalance > 0) {
@@ -79,7 +80,7 @@ export const CustomerService = {
                     referenceType: 'Manual',
                     referenceId: customer._id,
                     description: 'رصيد افتتاحي (مديونية سابقة)'
-                });
+                }, session);
 
                 // 2. Create Accounting Entry
                 await AccountingEntry.createEntry({
@@ -90,7 +91,7 @@ export const CustomerService = {
                     description: `رصيد افتتاحي للعميل: ${customer.name}`,
                     refType: 'Manual',
                     refId: customer._id
-                });
+                }, session);
 
             } else {
                 // We owe customer (Credit)
@@ -102,11 +103,12 @@ export const CustomerService = {
                     description: `رصيد افتتاحي دائن للعميل: ${customer.name}`,
                     refType: 'Manual',
                     refId: customer._id
-                });
+                }, session);
             }
         }
 
         return customer;
+        });
     },
 
     async update(id, data) {

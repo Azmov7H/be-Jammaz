@@ -5,6 +5,7 @@ import '../../models/Supplier.js';
 import dbConnect from '../../lib/db.js';
 import { differenceInDays } from 'date-fns';
 import { BadRequestError, NotFoundError, ConflictError } from '../../lib/errors.js';
+import { withTransaction } from '../../utils/dbUtils.js';
 
 export class DebtService {
     /**
@@ -361,20 +362,28 @@ export class DebtService {
             });
         }
 
-        // Delete existing scheduled payments for this debt to avoid overlaps if re-scheduling
-        await PaymentSchedule.deleteMany({ debtId, status: 'PENDING' });
+        // T-BIZ-03: delete + insert + debt meta update in one transaction —
+        // re-scheduling can never leave a half-replaced plan.
+        const createdSchedules = await withTransaction(async (session) => {
+            await PaymentSchedule.deleteMany({ debtId, status: 'PENDING' }, { session });
+            const inserted = await PaymentSchedule.insertMany(schedules, { session });
 
-        const createdSchedules = await PaymentSchedule.insertMany(schedules);
+            await Debt.findByIdAndUpdate(
+                debtId,
+                { $set: {
+                    'meta.isScheduled': true,
+                    'meta.installmentsCount': installmentsCount,
+                    'meta.lastScheduledUpdate': new Date(),
+                } },
+                { session }
+            );
+            return inserted;
+        });
 
-        // Update Debt Meta
-        if (!debt.meta) {
-            debt.meta = new Map();
-        }
+        // Keep the in-memory doc consistent for the caller (meta persisted in txn)
+        if (!debt.meta) debt.meta = new Map();
         debt.meta.set('isScheduled', true);
         debt.meta.set('installmentsCount', installmentsCount);
-        debt.meta.set('lastScheduledUpdate', new Date());
-
-        await debt.save();
 
         return createdSchedules;
     }
