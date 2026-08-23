@@ -55,7 +55,7 @@ router.post('/move', routeHandler(async (req) => {
     });
 }));
 
-router.post('/adjust', roleMiddleware(['admin']), routeHandler(async (req) => {
+router.post('/adjust', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { productId, location, newQty, reason } = req.body;
     return await StockService.adjustStock(productId, location, newQty, reason, req.user._id);
 }));

@@ -12,6 +12,6 @@ router.get('/:id', routeHandler(InvoiceController.getById));
 router.post('/', routeHandler(InvoiceController.create));
 router.get('/:id/returns', routeHandler(InvoiceController.getReturns));
 router.post('/:id/return', routeHandler(InvoiceController.createReturn));
-router.delete('/:id', roleMiddleware(['admin']), routeHandler(InvoiceController.delete));
+router.delete('/:id', roleMiddleware(['owner']), routeHandler(InvoiceController.delete));
 
 export default router;

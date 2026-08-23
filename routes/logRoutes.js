@@ -6,7 +6,7 @@ import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js
 const router = express.Router();
 
 router.use(authMiddleware);
-router.use(roleMiddleware(['admin']));
+router.use(roleMiddleware(['owner', 'manager']));
 
 router.get('/', routeHandler(async (req) => {
     const { limit, page } = req.query;

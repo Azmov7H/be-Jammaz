@@ -24,7 +24,7 @@ router.get('/:id', routeHandler(async (req) => {
 }));
 
 // Create new physical inventory count
-router.post('/', roleMiddleware(['admin', 'manager']), routeHandler(async (req) => {
+router.post('/', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { location, options } = req.body;
     return await PhysicalInventoryService.createCount(location, req.user._id, options || {});
 }));
@@ -36,18 +36,18 @@ router.patch('/:id', routeHandler(async (req) => {
 }));
 
 // Complete a count
-router.post('/:id/complete', roleMiddleware(['admin', 'manager']), routeHandler(async (req) => {
+router.post('/:id/complete', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     return await PhysicalInventoryService.completeCount(req.params.id, req.user._id);
 }));
 
 // Unlock a completed count
-router.post('/:id/unlock', roleMiddleware(['admin']), routeHandler(async (req) => {
+router.post('/:id/unlock', roleMiddleware(['owner']), routeHandler(async (req) => {
     const { password } = req.body;
     return await PhysicalInventoryService.unlockCount(req.params.id, password, req.user._id);
 }));
 
 // Delete a draft count
-router.delete('/:id', roleMiddleware(['admin']), routeHandler(async (req) => {
+router.delete('/:id', roleMiddleware(['owner']), routeHandler(async (req) => {
     return await PhysicalInventoryService.deleteCount(req.params.id, req.user._id);
 }));
 

@@ -1,36 +1,45 @@
 import { verifyToken } from '../lib/auth.js';
 import User from '../models/User.js';
+import { UnauthorizedError, ForbiddenError } from '../lib/errors.js';
 
 export const authMiddleware = async (req, res, next) => {
     try {
         const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
-
         if (!token) {
-            return res.status(401).json({ success: false, message: 'Unauthorized: No token provided' });
+            throw new UnauthorizedError('Unauthorized: No token provided');
         }
 
         const decoded = await verifyToken(token);
         if (!decoded) {
-            return res.status(401).json({ success: false, message: 'Unauthorized: Invalid token' });
+            throw new UnauthorizedError('Unauthorized: Invalid token');
         }
 
-        const user = await User.findById(decoded.userId).select('-password');
-        if (!user) {
-            return res.status(404).json({ success: false, message: 'User not found' });
+        // select('+password') is never needed here; tokenVersion is checked
+        // when present in the payload so bumped versions kill old tokens.
+        const user = await User.findById(decoded.userId).select('+tokenVersion');
+        if (!user || user.isActive === false) {
+            throw new UnauthorizedError('Unauthorized: Session no longer valid');
+        }
+        if (
+            typeof decoded.tv === 'number' &&
+            decoded.tv !== (user.tokenVersion ?? 0)
+        ) {
+            throw new UnauthorizedError('Unauthorized: Session revoked');
         }
 
         req.user = user;
         next();
     } catch (error) {
-        console.error('Auth Middleware Error:', error);
-        res.status(500).json({ success: false, message: 'Internal Server Error during authentication' });
+        next(error);
     }
 };
 
 export const roleMiddleware = (roles) => {
     return (req, res, next) => {
-        if (!roles.includes(req.user.role)) {
-            return res.status(403).json({ success: false, message: 'Forbidden: You do not have permission' });
+        if (!req.user || !roles.includes(req.user.role)) {
+            return next(
+                new ForbiddenError('Forbidden: You do not have permission')
+            );
         }
         next();
     };
