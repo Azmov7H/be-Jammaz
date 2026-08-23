@@ -89,13 +89,7 @@ export class NotificationService {
         const user = await User.findById(userId).select('role');
         const role = user?.role;
 
-        const query = role === 'owner' ? {} : {
-            $or: [
-                { recipientId: userId },
-                { isGlobal: true },
-                { targetRole: role }
-            ]
-        };
+        const query = NotificationService.visibilityFilter(userId, role);
 
         if (unreadOnly) {
             query.isRead = false;
@@ -129,27 +123,35 @@ export class NotificationService {
         };
     }
 
+    /** Shared visibility predicate: what this user may see/touch (T-ACL-03). */
+    static visibilityFilter(userId, role) {
+        if (role === 'owner') return {};
+        return {
+            $or: [
+                { recipientId: userId },
+                { isGlobal: true },
+                { targetRole: role }
+            ]
+        };
+    }
+
     /**
      * Mark notifications as read
      */
     static async markRead(userId, ids, markAll = false) {
         await dbConnect();
+        const user = await User.findById(userId).select('role');
+        const role = user?.role;
 
         if (markAll) {
-            const user = await User.findById(userId).select('role');
-            const role = user?.role;
-            const query = { isRead: false };
-            if (role !== 'owner') {
-                query.$or = [
-                    { recipientId: userId },
-                    { isGlobal: true },
-                    { targetRole: role }
-                ];
-            }
-            await Notification.updateMany(query, { isRead: true });
-        } else if (Array.isArray(ids) && ids.length > 0) {
             await Notification.updateMany(
-                { _id: { $in: ids } },
+                { ...NotificationService.visibilityFilter(userId, role), isRead: false },
+                { isRead: true }
+            );
+        } else if (Array.isArray(ids) && ids.length > 0) {
+            // Scoped: a user can only mark notifications visible to them.
+            await Notification.updateMany(
+                { _id: { $in: ids }, ...NotificationService.visibilityFilter(userId, role) },
                 { isRead: true }
             );
         }
@@ -165,10 +167,9 @@ export class NotificationService {
         const user = await User.findById(userId).select('role');
         const role = user?.role;
 
-        const query = { _id: id };
-        if (role !== 'owner') {
-            query.recipientId = userId;
-        }
+        // Any user may delete a notification visible to them (their view);
+        // owner may delete anything. Recorded in api-deprecations.md.
+        const query = { _id: id, ...NotificationService.visibilityFilter(userId, role) };
 
         const notification = await Notification.findOneAndDelete(query);
         if (!notification) throw new NotFoundError('Notification not found');
