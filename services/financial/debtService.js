@@ -118,21 +118,32 @@ export class DebtService {
      */
     static async updateBalance(id, amountPaid, session = null) {
         await dbConnect();
-        const debt = await Debt.findById(id).session(session);
+
+        // T-DB-06: guarded atomic decrement — overpayment cannot drive the
+        // balance negative under concurrency; status flips conditionally.
+        const debt = await Debt.findOneAndUpdate(
+            { _id: id, remainingAmount: { $gte: amountPaid } },
+            [
+                { $set: {
+                    remainingAmount: {
+                        $cond: [
+                            { $lte: [{ $subtract: ['$remainingAmount', amountPaid] }, 0.01] },
+                            0,
+                            { $round: [{ $subtract: ['$remainingAmount', amountPaid] }, 2] }
+                        ]
+                    },
+                    status: {
+                        $cond: [
+                            { $lte: [{ $subtract: ['$remainingAmount', amountPaid] }, 0.01] },
+                            'settled',
+                            '$status'
+                        ]
+                    }
+                } }
+            ],
+            { new: true, session }
+        );
         if (!debt) throw new NotFoundError('Debt not found');
-
-        debt.remainingAmount -= amountPaid;
-
-        // Auto-settlement
-        if (debt.remainingAmount <= 0.01) { // 0.01 tolerance
-            debt.remainingAmount = 0;
-            debt.status = 'settled';
-        } else if (debt.status === 'settled') {
-            // Re-open if balance becomes positive (e.g. payment reversal)
-            debt.status = debt.dueDate < new Date() ? 'overdue' : 'active';
-        }
-
-        await debt.save({ session });
 
         // Update Parent Balance (Consolidated)
         const Model = debt.debtorType === 'Customer'

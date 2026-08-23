@@ -5,17 +5,17 @@ const ProductSchema = new mongoose.Schema({
         type: String,
         required: [true, 'Please provide a name'],
         trim: true,
-        index: true
+        index: true, maxlength: 200
     },
     code: {
         type: String,
         required: [true, 'Please provide a code'],
         unique: true,
         trim: true,
-        index: true
+        index: true, maxlength: 100
     },
-    brand: { type: String, trim: true, index: true },
-    category: { type: String, trim: true, index: true },
+    brand: { type: String, trim: true, index: true, maxlength: 100 },
+    category: { type: String, trim: true, index: true, maxlength: 100 },
     subsection: { type: String, trim: true, index: true },
     size: { type: String, trim: true },
     color: { type: String, trim: true },
@@ -74,7 +74,6 @@ ProductSchema.pre('save', function () {
 });
 
 if (mongoose.models.Product) {
-    delete mongoose.models.Product;
 }
 
 export default mongoose.models.Product || mongoose.model('Product', ProductSchema);

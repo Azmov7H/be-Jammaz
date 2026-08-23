@@ -17,4 +17,6 @@ const ShortageReportSchema = new mongoose.Schema({
 
 export default mongoose.models.ShortageReport || mongoose.model('ShortageReport', ShortageReportSchema);
 
-
+// T-DB-01
+ShortageReportSchema.index({ product: 1 });
+ShortageReportSchema.index({ status: 1 });

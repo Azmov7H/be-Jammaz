@@ -120,8 +120,7 @@ AccountingEntrySchema.statics.createEntry = async function ({
 
 // Safe Model registration for Next.js
 // Safe Model registration for Next.js
-delete mongoose.models.AccountingEntry;
-const AccountingEntry = mongoose.model('AccountingEntry', AccountingEntrySchema);
+const AccountingEntry = mongoose.models.AccountingEntry || mongoose.model('AccountingEntry', AccountingEntrySchema);
 
 export default AccountingEntry;
 

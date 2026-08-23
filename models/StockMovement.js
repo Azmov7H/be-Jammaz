@@ -7,7 +7,7 @@ const StockMovementSchema = new mongoose.Schema({
         enum: ['IN', 'OUT', 'SALE', 'ADJUST', 'TRANSFER_TO_SHOP', 'TRANSFER_TO_WAREHOUSE', 'INITIAL_BALANCE'],
         required: true
     },
-    qty: { type: Number, required: true }, // Always positive absolute value
+    qty: { type: Number, min: 1, required: true }, // Always positive absolute value
     note: String,
     refId: String, // Invoice ID or other ref
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -22,6 +22,8 @@ const StockMovementSchema = new mongoose.Schema({
 
 // Index for product history
 StockMovementSchema.index({ productId: 1, date: -1 });
+// T-DB-01
+StockMovementSchema.index({ refId: 1 });
 
 export default mongoose.models.StockMovement || mongoose.model('StockMovement', StockMovementSchema);
 
