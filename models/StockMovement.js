@@ -22,6 +22,8 @@ const StockMovementSchema = new mongoose.Schema({
 
 // Index for product history
 StockMovementSchema.index({ productId: 1, date: -1 });
+// T-DB-01
+StockMovementSchema.index({ refId: 1 });
 
 export default mongoose.models.StockMovement || mongoose.model('StockMovement', StockMovementSchema);
 

@@ -41,6 +41,10 @@ const UserSchema = new mongoose.Schema({
     timestamps: true
 });
 
+// T-DB-01
+UserSchema.index({ role: 1 });
+UserSchema.index({ isActive: 1 });
+
 export default mongoose.models.User || mongoose.model('User', UserSchema);
 
 

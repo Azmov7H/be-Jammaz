@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-const SalesReturnSchema = new mongoose.Schema({
+const SalesReturnSchema = new mongoose.Schema({ // T-DB-01 indexes at bottom
     returnNumber: { type: String, required: true, unique: true },
     date: { type: Date, default: Date.now },
 
@@ -54,4 +54,6 @@ if (mongoose.models.SalesReturn) {
 }
 export default mongoose.model('SalesReturn', SalesReturnSchema);
 
-
+// T-DB-01
+SalesReturnSchema.index({ originalInvoice: 1 });
+SalesReturnSchema.index({ customer: 1 });

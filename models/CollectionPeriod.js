@@ -33,4 +33,6 @@ const collectionPeriodSchema = new mongoose.Schema({
 
 export default mongoose.models.CollectionPeriod || mongoose.model('CollectionPeriod', collectionPeriodSchema);
 
-
+// T-DB-01
+collectionPeriodSchema.index({ debtId: 1 });
+collectionPeriodSchema.index({ assignedTo: 1, status: 1 });

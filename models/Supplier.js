@@ -24,4 +24,6 @@ const SupplierSchema = new mongoose.Schema({
 
 export default mongoose.models.Supplier || mongoose.model('Supplier', SupplierSchema);
 
-
+// T-DB-01
+SupplierSchema.index({ name: 1 });
+SupplierSchema.index({ isActive: 1 });

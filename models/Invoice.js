@@ -88,6 +88,7 @@ InvoiceSchema.methods.recordPayment = function (amount, method, note, userId, se
 };
 
 // Indexes for common queries
+InvoiceSchema.index({ dueDate: 1 });
 InvoiceSchema.index({ date: -1 });
 InvoiceSchema.index({ customer: 1 });
 InvoiceSchema.index({ paymentStatus: 1, date: -1 });  // For filtered lists
