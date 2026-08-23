@@ -12,6 +12,6 @@ router.get('/metadata', routeHandler(ProductController.getMetadata));
 router.get('/:id', routeHandler(ProductController.getById));
 router.post('/', routeHandler(ProductController.create));
 router.put('/:id', routeHandler(ProductController.update));
-router.delete('/:id', roleMiddleware(['admin']), routeHandler(ProductController.delete));
+router.delete('/:id', roleMiddleware(['owner']), routeHandler(ProductController.delete));
 
 export default router;

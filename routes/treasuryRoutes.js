@@ -25,7 +25,7 @@ router.get('/daily', routeHandler(async (req) => {
 }));
 
 // Reconcile cashbox
-router.post('/reconcile', roleMiddleware(['admin', 'manager']), routeHandler(async (req) => {
+router.post('/reconcile', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { date, actualClosingBalance, notes } = req.body;
     return await TreasuryService.reconcileCashbox(date || new Date(), actualClosingBalance, req.user._id, notes);
 }));
@@ -41,19 +41,19 @@ router.get('/transactions', routeHandler(async (req) => {
 }));
 
 // Add manual income
-router.post('/manual-income', routeHandler(async (req) => {
+router.post('/manual-income', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { amount, reason, date } = req.body;
     return await TreasuryService.addManualIncome(date || new Date(), amount, reason, req.user._id);
 }));
 
 // Add manual expense
-router.post('/manual-expense', routeHandler(async (req) => {
+router.post('/manual-expense', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { amount, reason, category, date } = req.body;
     return await TreasuryService.addManualExpense(date || new Date(), amount, reason, category, req.user._id);
 }));
 
 // Undo a manual transaction
-router.delete('/transactions/:id', roleMiddleware(['admin']), routeHandler(async (req) => {
+router.delete('/transactions/:id', roleMiddleware(['owner']), routeHandler(async (req) => {
     return await TreasuryService.undoTransaction(req.params.id, req.user._id);
 }));
 

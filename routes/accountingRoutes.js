@@ -26,13 +26,13 @@ router.get('/entries', routeHandler(async (req) => {
 }));
 
 // Manual Entry (Expense)
-router.post('/entries/expense', routeHandler(async (req) => {
+router.post('/entries/expense', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { amount, category, description, date } = req.body;
     return await AccountingService.createExpenseEntry(amount, category, description, req.user._id, date ? new Date(date) : new Date());
 }));
 
 // Manual Entry (Income)
-router.post('/entries/income', routeHandler(async (req) => {
+router.post('/entries/income', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { amount, description, date } = req.body;
     return await AccountingService.createIncomeEntry(amount, description, req.user._id, date ? new Date(date) : new Date());
 }));

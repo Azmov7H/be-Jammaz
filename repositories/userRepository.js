@@ -5,6 +5,16 @@ export const UserRepository = {
         return await User.findOne({ email });
     },
 
+    /** Only for credential verification — returns hash. Never serialize result to client. */
+    async findByEmailWithPassword(email) {
+        return await User.findOne({ email }).select('+password');
+    },
+
+    /** Only for credential verification — returns hash. */
+    async findOwnerWithPassword() {
+        return await User.findOne({ role: 'owner' }).select('+password');
+    },
+
     async findById(id) {
         return await User.findById(id);
     },

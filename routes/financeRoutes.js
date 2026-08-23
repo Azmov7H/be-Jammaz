@@ -15,32 +15,32 @@ router.post('/payments/customer', routeHandler(async (req) => {
     return await FinanceService.recordCustomerPayment(invoice, amount, method, note, req.user._id);
 }));
 
-// Record a unified customer payment (collection against total balance)
-router.post('/payments/unified', routeHandler(async (req) => {
+// Unified collection: manager+ (T-ACL-02)
+router.post('/payments/unified', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { customerId, amount, method, note } = req.body;
     return await FinanceService.recordTotalCustomerPayment(customerId, amount, method, note, req.user._id);
 }));
 
-// Record a supplier payment
-router.post('/payments/supplier', routeHandler(async (req) => {
+// Supplier payment: manager+ (T-ACL-02)
+router.post('/payments/supplier', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { po, amount, method, note } = req.body;
     return await FinanceService.recordSupplierPayment(po, amount, method, note, req.user._id);
 }));
 
-// Record a manual debt payment
-router.post('/payments/debt', routeHandler(async (req) => {
+// Manual debt payment: manager+ (T-ACL-02)
+router.post('/payments/debt', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { debt, amount, method, note } = req.body;
     return await FinanceService.recordManualDebtPayment(debt, amount, method, note, req.user._id);
 }));
 
 // Process a sales return
-router.post('/returns', routeHandler(async (req) => {
+router.post('/returns', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { invoice, returnData, refundMethod } = req.body;
     return await FinanceService.processSaleReturn(invoice, returnData, refundMethod, req.user._id);
 }));
 
 // Record a general expense
-router.post('/expenses', routeHandler(async (req) => {
+router.post('/expenses', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     return await FinanceService.recordExpense(req.body, req.user._id);
 }));
 
@@ -69,8 +69,8 @@ router.get('/debts/:debtId/installments', routeHandler(async (req) => {
     return await DebtService.getInstallments(req.params.debtId);
 }));
 
-// Canonical: Create Installment Plan for a specific debt
-router.post('/debts/:debtId/installments', routeHandler(async (req) => {
+// Installment plans: manager+ (T-ACL-02)
+router.post('/debts/:debtId/installments', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     return await DebtService.createInstallmentPlan({ ...req.body, debtId: req.params.debtId, userId: req.user._id });
 }));
 
@@ -80,7 +80,7 @@ const deprecated = (_req, res, next) => {
 };
 
 // DEPRECATED legacy paths — kept until frontend migrates to /debts/:debtId/installments
-router.post('/installments', deprecated, routeHandler(async (req) => {
+router.post('/installments', deprecated, roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     return await DebtService.createInstallmentPlan({ ...req.body, userId: req.user._id });
 }));
 
@@ -88,8 +88,8 @@ router.get('/installments/:debtId', deprecated, routeHandler(async (req) => {
     return await DebtService.getInstallments(req.params.debtId);
 }));
 
-// Generic payments endpoint (routes to unified by default)
-router.post('/payments', routeHandler(async (req) => {
+// Dispatcher: manager+ (can reach supplier/unified paths; cashiers use /payments/customer) [T-ACL-02]
+router.post('/payments', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { customerId, supplierId, debtId, amount, method, note } = req.body;
     return await FinanceService.resolvePayment({ customerId, supplierId, debtId, amount, method, note }, req.user._id);
 }));

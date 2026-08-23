@@ -23,7 +23,7 @@ router.put('/:id', routeHandler(async (req) => {
     return await SupplierService.update(req.params.id, req.body);
 }));
 
-router.delete('/:id', roleMiddleware(['admin']), routeHandler(async (req) => {
+router.delete('/:id', roleMiddleware(['owner']), routeHandler(async (req) => {
     return await SupplierService.delete(req.params.id);
 }));
 

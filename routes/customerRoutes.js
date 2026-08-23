@@ -26,7 +26,7 @@ router.put('/:id', routeHandler(async (req) => {
     return await CustomerService.update(req.params.id, req.body);
 }));
 
-router.delete('/:id', roleMiddleware(['admin']), routeHandler(async (req) => {
+router.delete('/:id', roleMiddleware(['owner']), routeHandler(async (req) => {
     return await CustomerService.delete(req.params.id);
 }));
 

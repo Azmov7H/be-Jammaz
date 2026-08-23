@@ -16,10 +16,20 @@ const UserSchema = new mongoose.Schema({
     password: {
         type: String,
         required: false, // Optional for OAuth users
+        select: false,
+        minlength: [8, 'كلمة المرور قصيرة جدا'],
+    },
+    tokenVersion: {
+        type: Number,
+        default: 0,
+        select: false,
     },
     role: {
+        // Canonical set (T-AUTH-01): 'accountant'/'sales' removed — no
+        // permission mapping ever existed for them. Legacy docs are migrated
+        // by scripts/db/migrate-legacy-roles.js.
         type: String,
-        enum: ['owner', 'manager', 'cashier', 'warehouse', 'viewer', 'accountant', 'sales'],
+        enum: ['owner', 'manager', 'cashier', 'warehouse', 'viewer'],
         default: 'cashier',
     },
     picture: String,

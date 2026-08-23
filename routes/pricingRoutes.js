@@ -14,13 +14,13 @@ router.get('/history/:productId', routeHandler(async (req) => {
 }));
 
 // Set Custom Price
-router.post('/custom', routeHandler(async (req) => {
+router.post('/custom', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { customerId, productId, price } = req.body;
     return await PricingService.setCustomPrice(customerId, productId, price, req.user._id);
 }));
 
 // Remove Custom Price
-router.delete('/custom', routeHandler(async (req) => {
+router.delete('/custom', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { customerId, productId } = req.body;
     return await PricingService.removeCustomPrice(customerId, productId);
 }));
