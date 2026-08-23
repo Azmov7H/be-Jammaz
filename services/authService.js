@@ -1,4 +1,5 @@
 import { signToken, verifyToken } from '../lib/auth.js';
+import { logger } from '../lib/logger.js';
 import { UserRepository } from '../repositories/userRepository.js';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
@@ -11,8 +12,7 @@ const REFRESH_TTL_DAYS = parseInt(process.env.REFRESH_TOKEN_TTL_DAYS || '30', 10
 const sha256 = (v) => crypto.createHash('sha256').update(v).digest('hex');
 
 function logSecurityEvent(event, details) {
-    // Structured line; wired into the log pipeline in Sprint 10.
-    console.log(JSON.stringify({ event, at: new Date().toISOString(), ...details }));
+    logger.security(event, details);
 }
 
 export const AuthService = {
