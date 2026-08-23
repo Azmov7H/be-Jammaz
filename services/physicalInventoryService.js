@@ -271,11 +271,13 @@ export const PhysicalInventoryService = {
     async getCountById(countId) {
         await dbConnect();
 
-        return await PhysicalInventory.findById(countId)
+        const count = await PhysicalInventory.findById(countId)
             .populate('items.productId', 'name code')
             .populate('createdBy', 'name')
             .populate('approvedBy', 'name')
             .lean();
+        if (!count) throw new NotFoundError('سجل الجرد غير موجود');
+        return count;
     },
 
     /**

@@ -2,6 +2,10 @@ import express from 'express';
 import { PhysicalInventoryService } from '../services/physicalInventoryService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
+import { validate, validateParams } from '../lib/validate.js';
+import { physicalInventoryCreateSchema, physicalInventoryUpdateSchema, unlockSchema, idSchema } from '../validations/index.js';
+import { z } from 'zod';
+const idParams = z.object({ id: idSchema });
 
 const router = express.Router();
 
@@ -19,7 +23,7 @@ router.get('/', routeHandler(async (req) => {
 }));
 
 // Get single count by ID
-router.get('/:id', routeHandler(async (req) => {
+router.get('/:id', validateParams(idParams), routeHandler(async (req) => {
     return await PhysicalInventoryService.getCountById(req.params.id);
 }));
 
@@ -30,24 +34,24 @@ router.post('/', roleMiddleware(['owner', 'manager']), routeHandler(async (req) 
 }));
 
 // Update actual quantities
-router.patch('/:id', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.patch('/:id', validateParams(idParams), roleMiddleware(['owner', 'manager']), validate(physicalInventoryUpdateSchema), routeHandler(async (req) => {
     const { itemUpdates } = req.body;
     return await PhysicalInventoryService.updateActualQuantities(req.params.id, itemUpdates, req.user._id);
 }));
 
 // Complete a count
-router.post('/:id/complete', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.post('/:id/complete', validateParams(idParams), roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     return await PhysicalInventoryService.completeCount(req.params.id, req.user._id);
 }));
 
 // Unlock a completed count
-router.post('/:id/unlock', roleMiddleware(['owner']), routeHandler(async (req) => {
+router.post('/:id/unlock', validateParams(idParams), roleMiddleware(['owner']), validate(unlockSchema), routeHandler(async (req) => {
     const { password } = req.body;
     return await PhysicalInventoryService.unlockCount(req.params.id, password, req.user._id);
 }));
 
 // Delete a draft count
-router.delete('/:id', roleMiddleware(['owner']), routeHandler(async (req) => {
+router.delete('/:id', validateParams(idParams), roleMiddleware(['owner']), routeHandler(async (req) => {
     return await PhysicalInventoryService.deleteCount(req.params.id, req.user._id);
 }));
 
