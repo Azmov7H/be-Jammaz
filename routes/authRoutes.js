@@ -5,6 +5,7 @@ import { routeHandler } from '../lib/route-handler.js';
 const router = express.Router();
 
 router.post('/login', routeHandler(AuthController.login));
+router.post('/refresh', routeHandler(AuthController.refresh));
 router.post('/logout', routeHandler(AuthController.logout));
 router.get('/session', routeHandler(AuthController.getSession));
 router.post('/google/callback', routeHandler(AuthController.googleCallback));
