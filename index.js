@@ -106,7 +106,14 @@ const startServer = async () => {
     }
 };
 
-startServer();
+// Only bind the port when executed directly (not imported by tests/tools)
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+const isMainProcess = process.argv[1] &&
+    import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMainProcess) {
+    startServer();
+}
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -148,3 +155,5 @@ app.get('/', (req, res) => {
 // Error Handler
 import { errorHandler } from './middlewares/errorHandler.js';
 app.use(errorHandler);
+
+export default app;
