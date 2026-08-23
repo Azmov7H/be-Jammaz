@@ -326,6 +326,43 @@ export const StockService = {
     /**
      * Get all stock movements for a date range
      */
+
+    /**
+     * List active products with stock projections.
+     * @param {{search?:string, lowStock?:boolean, outOfStock?:boolean}} filters
+     */
+    async listStock({ search, lowStock, outOfStock } = {}) {
+        const filter = { isActive: true };
+
+        if (search) {
+            filter.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { code: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        if (lowStock === true || lowStock === 'true') {
+            filter.$expr = { $lte: ['$stockQty', '$minLevel'] };
+        }
+
+        if (outOfStock === true || outOfStock === 'true') {
+            filter.stockQty = 0;
+        }
+
+        const products = await Product.find(filter)
+            .select('name code stockQty warehouseQty shopQty minLevel buyPrice retailPrice')
+            .sort({ name: 1 })
+            .limit(100)
+            .lean();
+
+        return { products, count: products.length };
+    },
+
+    /** Same as listStock with no filters */
+    async listStatus() {
+        return this.listStock();
+    },
+
     async getMovements(startDate, endDate, type = null) {
         const query = {
             date: {

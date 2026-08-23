@@ -23,13 +23,6 @@ router.get('/:id', routeHandler(async (req) => {
     return await PhysicalInventoryService.getCountById(req.params.id);
 }));
 
-// Get recent movements for a count
-router.get('/:id/recent-movements', routeHandler(async (req) => {
-    // This might need implementation in the service if not exists
-    const count = await PhysicalInventoryService.getCountById(req.params.id);
-    return count?.recentMovements || [];
-}));
-
 // Create new physical inventory count
 router.post('/', roleMiddleware(['admin', 'manager']), routeHandler(async (req) => {
     const { location, options } = req.body;

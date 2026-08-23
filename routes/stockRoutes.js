@@ -2,7 +2,6 @@ import express from 'express';
 import { StockService } from '../services/stockService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
-import Product from '../models/Product.js';
 
 const router = express.Router();
 
@@ -11,31 +10,7 @@ router.use(authMiddleware);
 // Get stock status (returns products with stock info)
 router.get('/', routeHandler(async (req) => {
     const { search, lowStock, outOfStock } = req.query;
-
-    const filter = { isActive: true };
-
-    if (search) {
-        filter.$or = [
-            { name: { $regex: search, $options: 'i' } },
-            { code: { $regex: search, $options: 'i' } }
-        ];
-    }
-
-    if (lowStock === 'true') {
-        filter.$expr = { $lte: ['$stockQty', '$minLevel'] };
-    }
-
-    if (outOfStock === 'true') {
-        filter.stockQty = 0;
-    }
-
-    const products = await Product.find(filter)
-        .select('name code stockQty warehouseQty shopQty minLevel buyPrice retailPrice')
-        .sort({ name: 1 })
-        .limit(100)
-        .lean();
-
-    return { products, count: products.length };
+    return await StockService.listStock({ search, lowStock, outOfStock });
 }));
 
 router.get('/movements', routeHandler(async (req) => {
@@ -47,15 +22,8 @@ router.get('/movements', routeHandler(async (req) => {
     );
 }));
 
-router.get('/status', routeHandler(async (req) => {
-    // Same as root endpoint
-    const products = await Product.find({ isActive: true })
-        .select('name code stockQty warehouseQty shopQty minLevel buyPrice retailPrice')
-        .sort({ name: 1 })
-        .limit(100)
-        .lean();
-
-    return { products, count: products.length };
+router.get('/status', routeHandler(async () => {
+    return await StockService.listStatus();
 }));
 
 router.post('/transfer', routeHandler(async (req) => {

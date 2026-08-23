@@ -4,7 +4,7 @@ import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 
 import Debt from '../models/Debt.js';
-import { NotFoundError } from '../lib/errors.js';
+import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
 /**
  * Treasury/Cashbox Management Service
@@ -715,6 +715,45 @@ export const TreasuryService = {
         );
 
         return `REC-${settings.lastReceiptNumber}`;
+    },
+
+    /**
+     * Assemble a printable receipt (transaction + partner + company settings).
+     */
+    async buildReceipt(transactionId) {
+        if (!transactionId || transactionId === 'undefined' || transactionId.length !== 24) {
+            throw new BadRequestError('رقم السند غير صحيح');
+        }
+
+        const Customer = (await import('../models/Customer.js')).default;
+        const Supplier = (await import('../models/Supplier.js')).default;
+
+        const transaction = await TreasuryTransaction.findById(transactionId)
+            .populate('referenceId')
+            .populate('createdBy', 'name')
+            .lean();
+
+        if (!transaction) throw new NotFoundError('السند غير موجود');
+
+        const settings = await InvoiceSettings.findOne().lean() || {
+            companyName: 'شركتكم',
+            showLogo: false
+        };
+
+        let partner = null;
+        let remainingBalance = 0;
+
+        if (transaction.referenceType === 'Customer' || transaction.referenceType === 'UnifiedCollection') {
+            partner = await Customer.findById(transaction.referenceId).lean();
+            remainingBalance = partner?.balance || 0;
+        }
+
+        if (transaction.referenceType === 'PurchaseOrder' || transaction.referenceType === 'Supplier') {
+            partner = await Supplier.findById(transaction.referenceId).lean();
+            remainingBalance = partner?.balance || 0;
+        }
+
+        return { transaction, partner, settings, remainingBalance };
     }
 };
 

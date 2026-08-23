@@ -220,6 +220,22 @@ export const PricingService = {
     /**
      * Get all custom prices for a customer
      */
+    /**
+     * Customer pricing view for the frontend: flattened price rows.
+     */
+    async getCustomerPricingView(customerId) {
+        const prices = await this.getCustomerPricing(customerId);
+        return {
+            prices: prices.map(p => ({
+                productId: p.productId?._id || p.productId,
+                productName: p.productId?.name || 'منتج محذوف',
+                retailPrice: p.productId?.retailPrice || 0,
+                wholesalePrice: p.productId?.wholesalePrice || 0,
+                customPrice: p.customPrice
+            }))
+        };
+    },
+
     async getCustomerPricing(customerId) {
         await dbConnect();
 
