@@ -11,7 +11,7 @@ import dbConnect from '../lib/db.js';
 export async function withTransaction(fn) {
     await dbConnect();
 
-    let session = null;
+    let session;
     try {
         session = await mongoose.startSession();
         session.startTransaction();

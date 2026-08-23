@@ -1,79 +1,85 @@
-/**
- * @jest-environment node
- */
-import { NotificationService } from './notificationService.js';
-import Notification from '../models/Notification.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock the Mongoose models
-jest.mock('../models/Notification', () => ({
-    create: jest.fn(),
-    findOne: jest.fn(),
-    find: jest.fn(),
-    countDocuments: jest.fn(),
-    updateMany: jest.fn(),
+const notificationMocks = vi.hoisted(() => ({
+    create: vi.fn(),
+    findOne: vi.fn(),
+    find: vi.fn(),
+    countDocuments: vi.fn(),
+    updateMany: vi.fn(),
 }));
 
-jest.mock('../models/User', () => ({
-    findById: jest.fn().mockReturnThis(),
-    select: jest.fn().mockResolvedValue({ role: 'admin' }),
+const userMocks = vi.hoisted(() => ({
+    findById: vi.fn(),
 }));
 
-jest.mock('../lib/db', () => jest.fn()); // Mock dbConnect
+vi.mock('../models/Notification.js', () => ({ default: notificationMocks }));
+vi.mock('../models/Product.js', () => ({ default: {} }));
+vi.mock('../models/Invoice.js', () => ({ default: {} }));
+vi.mock('../models/PurchaseOrder.js', () => ({ default: {} }));
+vi.mock('../models/InvoiceSettings.js', () => ({ default: {} }));
+vi.mock('../models/SystemMeta.js', () => ({ default: {} }));
+vi.mock('../models/User.js', () => ({
+    default: { findById: userMocks.findById },
+}));
+vi.mock('../lib/db.js', () => ({ default: vi.fn() }));
+
+const userMockChain = (role) => {
+    const chain = { select: vi.fn().mockResolvedValue({ role }) };
+    userMocks.findById.mockReturnValue(chain);
+    return chain;
+};
+
+const { NotificationService } = await import('./notificationService.js');
+const Notification = (await import('../models/Notification.js')).default;
+
+beforeEach(() => {
+    vi.clearAllMocks();
+});
 
 describe('NotificationService Unit Tests', () => {
-    beforeEach(() => {
-        jest.clearAllMocks();
-    });
-
     describe('create with deduplication', () => {
         it('should create a notification if no duplicate exists', async () => {
-            // Setup
             Notification.findOne.mockResolvedValue(null);
             Notification.create.mockResolvedValue({ _id: '123', title: 'Test' });
 
-            // Execute
             const result = await NotificationService.create({
                 title: 'Test Notification',
                 message: 'Hello',
-                deduplicationKey: 'key-1'
+                deduplicationKey: 'key-1',
             });
 
-            // Verify
-            expect(Notification.findOne).toHaveBeenCalled(); // Checks deduplication
+            expect(Notification.findOne).toHaveBeenCalled();
             expect(Notification.create).toHaveBeenCalledWith(expect.objectContaining({
                 title: 'Test Notification',
-                metadata: {}
+                metadata: {},
             }));
             expect(result).toEqual({ _id: '123', title: 'Test' });
         });
 
         it('should return null if duplicate exists', async () => {
-            // Setup: findOne finds something
             Notification.findOne.mockResolvedValue({ _id: 'existing' });
 
-            // Execute
             const result = await NotificationService.create({
                 title: 'Test Notification',
-                deduplicationKey: 'key-1'
+                deduplicationKey: 'key-1',
             });
 
-            // Verify
             expect(Notification.create).not.toHaveBeenCalled();
             expect(result).toBeNull();
         });
     });
 
     describe('User Notifications', () => {
-        it('should return paginated notifications', async () => {
+        it('should return paginated notifications for a manager', async () => {
             const mockNotifs = [{ title: 'A' }, { title: 'B' }];
-            const mockFind = {
-                sort: jest.fn().mockReturnThis(),
-                skip: jest.fn().mockReturnThis(),
-                limit: jest.fn().mockReturnThis(),
-                lean: jest.fn().mockResolvedValue(mockNotifs)
-            };
-            Notification.find.mockReturnValue(mockFind);
-            Notification.countDocuments.mockResolvedValue(10); // total 10
+            Notification.find.mockReturnValue({
+                sort: vi.fn().mockReturnThis(),
+                skip: vi.fn().mockReturnThis(),
+                limit: vi.fn().mockReturnThis(),
+                lean: vi.fn().mockResolvedValue(mockNotifs),
+            });
+            Notification.countDocuments.mockResolvedValue(10);
+            userMockChain('manager');
 
             const result = await NotificationService.getUserNotifications('user1', { limit: 2, page: 1 });
 
@@ -91,18 +97,15 @@ describe('NotificationService Unit Tests', () => {
             await NotificationService.create({
                 title: 'Legacy',
                 category: 'FINANCIAL',
-                actionType: 'PAY'
+                actionType: 'PAY',
             });
 
             expect(Notification.create).toHaveBeenCalledWith(expect.objectContaining({
                 metadata: {
                     category: 'FINANCIAL',
-                    actionType: 'PAY'
-                }
+                    actionType: 'PAY',
+                },
             }));
         });
     });
 });
-
-
-
