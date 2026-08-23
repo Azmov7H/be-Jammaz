@@ -48,7 +48,7 @@ export const PhysicalInventoryService = {
                 productName: product.name,
                 productCode: product.code,
                 systemQty,
-                actualQty: !!isBlind ? 0 : systemQty, // [FIX] Zero if blind, else system qty
+                actualQty: isBlind ? 0 : systemQty, // [FIX] Zero if blind, else system qty
                 buyPrice: product.buyPrice
             };
         });

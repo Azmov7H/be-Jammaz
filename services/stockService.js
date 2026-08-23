@@ -456,7 +456,7 @@ export const StockService = {
         const product = await Product.findById(productId).session(session);
         if (!product) throw new Error('Product not found');
 
-        let updateQuery = {};
+        let updateQuery;
 
         switch (type) {
             case 'IN':
