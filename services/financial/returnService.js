@@ -1,4 +1,5 @@
 import dbConnect from '../../lib/db.js';
+import { nextDocumentNumber } from '../../lib/counters.js';
 import SalesReturn from '../../models/SalesReturn.js';
 import Customer from '../../models/Customer.js';
 import { StockService } from '../stockService.js';
@@ -98,7 +99,7 @@ export const ReturnService = {
 
             // 2. Create SalesReturn document
             const salesReturn = await SalesReturn.create([{
-                returnNumber: `RET-${Date.now()}`,
+                returnNumber: await nextDocumentNumber('RET'),
                 originalInvoice: invoice._id,
                 customer: invoice.customer,
                 items: returnItems,

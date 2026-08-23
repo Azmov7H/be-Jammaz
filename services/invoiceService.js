@@ -6,6 +6,7 @@ import Customer from '../models/Customer.js';
 import { SaleService } from './financial/saleService.js';
 import dbConnect from '../lib/db.js';
 import { NotFoundError } from '../lib/errors.js';
+import { nextDocumentNumber } from '../lib/counters.js';
 import mongoose from 'mongoose';
 import { AppError } from '../middlewares/errorHandler.js';
 import { withTransaction } from '../utils/dbUtils.js';
@@ -59,7 +60,7 @@ export const InvoiceService = {
 
             // 3. Create Invoice Record
             const invoiceData = {
-                number: `INV-${Date.now()}`,
+                number: await nextDocumentNumber('INV'),
                 items: processedItems,
                 subtotal,
                 tax,

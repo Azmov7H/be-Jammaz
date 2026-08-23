@@ -1,4 +1,5 @@
 import PurchaseOrder from '../models/PurchaseOrder.js';
+import { nextDocumentNumber } from '../lib/counters.js';
 import Supplier from '../models/Supplier.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 import { FinanceService } from '../services/financeService.js';
@@ -30,7 +31,7 @@ export const PurchaseOrderService = {
         });
 
         const po = await PurchaseOrder.create({
-            poNumber: `PO-${Date.now()}`,
+            poNumber: await nextDocumentNumber('PO'),
             supplier: supplierId,
             items,
             totalCost,
