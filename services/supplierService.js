@@ -1,5 +1,6 @@
 import Supplier from '../models/Supplier.js';
 import dbConnect from '../lib/db.js';
+import { NotFoundError, ConflictError } from '../lib/errors.js';
 
 export const SupplierService = {
     async getAll({ page = 1, limit = 20, search }) {
@@ -34,7 +35,7 @@ export const SupplierService = {
     async getById(id) {
         await dbConnect();
         const supplier = await Supplier.findById(id).lean();
-        if (!supplier) throw 'Supplier not found';
+        if (!supplier) throw new NotFoundError('Supplier not found');
         return supplier;
     },
 
@@ -45,7 +46,7 @@ export const SupplierService = {
 
         const existing = await Supplier.findOne({ name: supplierData.name });
         if (existing) {
-            throw 'اسم المورد موجود بالفعل';
+            throw new ConflictError('اسم المورد موجود بالفعل');
         }
 
         const supplier = await Supplier.create({
@@ -100,14 +101,14 @@ export const SupplierService = {
     async update(id, data) {
         await dbConnect();
         const supplier = await Supplier.findByIdAndUpdate(id, data, { new: true });
-        if (!supplier) throw 'Supplier not found';
+        if (!supplier) throw new NotFoundError('Supplier not found');
         return supplier;
     },
 
     async delete(id) {
         await dbConnect();
         const supplier = await Supplier.findByIdAndDelete(id);
-        if (!supplier) throw 'Supplier not found';
+        if (!supplier) throw new NotFoundError('Supplier not found');
         return { message: 'Supplier deleted' };
     }
 };

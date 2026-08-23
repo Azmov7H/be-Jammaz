@@ -9,6 +9,5 @@ router.use(authMiddleware);
 
 router.get('/invoice-design', routeHandler(SettingsController.getInvoiceDesign));
 router.put('/invoice-design', roleMiddleware(['owner', 'manager']), routeHandler(SettingsController.updateInvoiceDesign));
-router.post('/invoice-design', roleMiddleware(['owner', 'manager']), routeHandler(SettingsController.updateInvoiceDesign));
 
 export default router;

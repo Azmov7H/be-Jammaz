@@ -127,8 +127,11 @@ app.use('/api/stock', stockRoutes);
 app.use('/api', reportRoutes); // reportRoutes handles /dashboard and /reports
 app.use('/api/users', userRoutes);
 app.use('/api/logs', logRoutes);
-app.use('/api/purchases', purchaseRoutes);
-app.use('/api/purchase-orders', purchaseRoutes); // Alias for frontend compatibility
+app.use('/api/purchase-orders', purchaseRoutes); // canonical
+app.use('/api/purchases', (_req, res, next) => {
+    res.set('Deprecation', 'true');
+    next();
+}, purchaseRoutes); // deprecated alias — frontend verified to use /purchase-orders
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/physical-inventory', physicalInventoryRoutes);
 app.use('/api/daily-sales', dailySalesRoutes);

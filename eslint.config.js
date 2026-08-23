@@ -15,9 +15,9 @@ export default [
             },
         },
         rules: {
-            // Sprint 01 will promote these to 'error' once string throws are migrated;
+            // T-ARC-01: string throws migrated to AppError hierarchy (lib/errors.js)
+            'no-throw-literal': 'error',
             // useless-catch wrappers live in financial services rewritten by Sprint 05
-            'no-throw-literal': 'warn',
             'no-useless-catch': 'warn',
             'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
         },

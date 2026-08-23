@@ -6,6 +6,7 @@ import InvoiceSettings from '../models/InvoiceSettings.js';
 import SystemMeta from '../models/SystemMeta.js';
 import User from '../models/User.js';
 import dbConnect from '../lib/db.js';
+import { NotFoundError } from '../lib/errors.js';
 
 export class NotificationService {
     /**
@@ -170,7 +171,7 @@ export class NotificationService {
         }
 
         const notification = await Notification.findOneAndDelete(query);
-        if (!notification) throw 'Notification not found';
+        if (!notification) throw new NotFoundError('Notification not found');
         return { success: true };
     }
 

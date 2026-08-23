@@ -1,6 +1,7 @@
 import Customer from '../models/Customer.js';
 import { CACHE_TAGS } from '../lib/cache.js';
 import dbConnect from '../lib/db.js';
+import { NotFoundError, ConflictError } from '../lib/errors.js';
 
 export const CustomerService = {
     async getAll({ page = 1, limit = 20, search }) {
@@ -35,7 +36,7 @@ export const CustomerService = {
     async getById(id) {
         await dbConnect();
         const customer = await Customer.findById(id).lean();
-        if (!customer) throw 'Customer not found';
+        if (!customer) throw new NotFoundError('Customer not found');
         return customer;
     },
 
@@ -47,7 +48,7 @@ export const CustomerService = {
 
         const existing = await Customer.findOne({ phone: customerData.phone });
         if (existing) {
-            throw 'رقم الهاتف مستخدم بالفعل لعميل آخر';
+            throw new ConflictError('رقم الهاتف مستخدم بالفعل لعميل آخر');
         }
 
         // Initialize credit balance (pre-paid)
@@ -113,11 +114,11 @@ export const CustomerService = {
 
         if (data.phone) {
             const existing = await Customer.findOne({ phone: data.phone, _id: { $ne: id } });
-            if (existing) throw 'رقم الهاتف مستخدم بالفعل لعميل آخر';
+            if (existing) throw new ConflictError('رقم الهاتف مستخدم بالفعل لعميل آخر');
         }
 
         const customer = await Customer.findByIdAndUpdate(id, data, { new: true });
-        if (!customer) throw 'Customer not found';
+        if (!customer) throw new NotFoundError('Customer not found');
 
         return customer;
     },
@@ -126,7 +127,7 @@ export const CustomerService = {
         await dbConnect();
 
         const customer = await Customer.findById(id);
-        if (!customer) throw 'Customer not found';
+        if (!customer) throw new NotFoundError('Customer not found');
 
         // Check if customer has any invoices or debts before deleting
         const Invoice = (await import('../models/Invoice.js')).default;
@@ -138,7 +139,7 @@ export const CustomerService = {
         ]);
 
         if (hasInvoices || hasDebts) {
-            throw 'لا يمكن حذف العميل لوجود معاملات مالية أو فواتير مرتبطة به. يمكنك إيقاف تنشيطه بدلاً من ذلك.';
+            throw new ConflictError('لا يمكن حذف العميل لوجود معاملات مالية أو فواتير مرتبطة به. يمكنك إيقاف تنشيطه بدلاً من ذلك.');
         }
 
         await Customer.findByIdAndDelete(id);
@@ -150,7 +151,7 @@ export const CustomerService = {
         await dbConnect();
 
         const customer = await Customer.findById(id).select('name phone balance creditBalance openBalance');
-        if (!customer) throw 'Customer not found';
+        if (!customer) throw new NotFoundError('Customer not found');
 
         const Invoice = (await import('../models/Invoice.js')).default;
         const TreasuryTransaction = (await import('../models/TreasuryTransaction.js')).default;

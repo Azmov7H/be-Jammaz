@@ -4,6 +4,7 @@ import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import dbConnect from '../lib/db.js';
 import { toIdString } from '../utils/idUtils.js';
+import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
 /**
  * Stock Management Service
@@ -29,17 +30,17 @@ export const StockService = {
         for (const item of trackableItems) {
             const pid = toIdString(item.productId);
             const product = productMap.get(pid);
-            if (!product) throw new Error(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
+            if (!product) throw new NotFoundError(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
 
             const source = item.source || 'shop';
             const qty = Number(item.qty);
 
             // 1. Validate & Update Quantities
             if (source === 'warehouse') {
-                if (product.warehouseQty < qty) throw new Error(`الكمية غير كافية في المخزن: ${product.name}`);
+                if (product.warehouseQty < qty) throw new BadRequestError(`الكمية غير كافية في المخزن: ${product.name}`);
                 product.warehouseQty -= qty;
             } else {
-                if (product.shopQty < qty) throw new Error(`الكمية غير كافية في المتجر: ${product.name}`);
+                if (product.shopQty < qty) throw new BadRequestError(`الكمية غير كافية في المتجر: ${product.name}`);
                 product.shopQty -= qty;
             }
             product.stockQty = (product.warehouseQty || 0) + (product.shopQty || 0);
@@ -104,7 +105,7 @@ export const StockService = {
         for (const item of items) {
             const pid = toIdString(item.productId);
             const product = productMap.get(pid);
-            if (!product) throw new Error(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
+            if (!product) throw new NotFoundError(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
 
             const currentStock = product.stockQty || 0;
             const currentCost = product.buyPrice || 0;
@@ -169,11 +170,11 @@ export const StockService = {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
         if (product.warehouseQty < quantity) {
-            throw new Error(
+            throw new BadRequestError(
                 `كمية غير كافية في المخزن. المتوفر: ${product.warehouseQty}, المطلوب: ${quantity}`
             );
         }
@@ -207,11 +208,11 @@ export const StockService = {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
         if (product.shopQty < quantity) {
-            throw new Error(
+            throw new BadRequestError(
                 `كمية غير كافية في المحل. المتوفر: ${product.shopQty}, المطلوب: ${quantity}`
             );
         }
@@ -243,7 +244,7 @@ export const StockService = {
      */
     async registerInitialBalance(productId, warehouseQty, shopQty, buyPrice, userId, session = null) {
         const product = await Product.findById(productId).session(session);
-        if (!product) throw new Error('not found');
+        if (!product) throw new NotFoundError('not found');
 
         product.warehouseQty = warehouseQty;
         product.shopQty = shopQty;
@@ -278,7 +279,7 @@ export const StockService = {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
         const oldWarehouseQty = product.warehouseQty;
@@ -325,6 +326,43 @@ export const StockService = {
     /**
      * Get all stock movements for a date range
      */
+
+    /**
+     * List active products with stock projections.
+     * @param {{search?:string, lowStock?:boolean, outOfStock?:boolean}} filters
+     */
+    async listStock({ search, lowStock, outOfStock } = {}) {
+        const filter = { isActive: true };
+
+        if (search) {
+            filter.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { code: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        if (lowStock === true || lowStock === 'true') {
+            filter.$expr = { $lte: ['$stockQty', '$minLevel'] };
+        }
+
+        if (outOfStock === true || outOfStock === 'true') {
+            filter.stockQty = 0;
+        }
+
+        const products = await Product.find(filter)
+            .select('name code stockQty warehouseQty shopQty minLevel buyPrice retailPrice')
+            .sort({ name: 1 })
+            .limit(100)
+            .lean();
+
+        return { products, count: products.length };
+    },
+
+    /** Same as listStock with no filters */
+    async listStatus() {
+        return this.listStock();
+    },
+
     async getMovements(startDate, endDate, type = null) {
         const query = {
             date: {
@@ -451,10 +489,10 @@ export const StockService = {
      */
     async moveStock({ productId, qty, type, userId, note, refId, isSystem = false }, session = null) {
         const quantity = Math.abs(Number(qty));
-        if (quantity === 0) throw new Error('Quantity must be greater than 0');
+        if (quantity === 0) throw new BadRequestError('Quantity must be greater than 0');
 
         const product = await Product.findById(productId).session(session);
-        if (!product) throw new Error('Product not found');
+        if (!product) throw new NotFoundError('Product not found');
 
         let updateQuery;
 
@@ -465,28 +503,28 @@ export const StockService = {
 
             case 'OUT':
                 if (product.warehouseQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient warehouse stock. Available: ${product.warehouseQty}`);
+                    throw new BadRequestError(`Insufficient warehouse stock. Available: ${product.warehouseQty}`);
                 }
                 updateQuery = { $inc: { warehouseQty: -quantity, stockQty: -quantity } };
                 break;
 
             case 'SALE':
                 if (product.shopQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient shop stock for sale. Available: ${product.shopQty}`);
+                    throw new BadRequestError(`Insufficient shop stock for sale. Available: ${product.shopQty}`);
                 }
                 updateQuery = { $inc: { shopQty: -quantity, stockQty: -quantity } };
                 break;
 
             case 'TRANSFER_TO_SHOP':
                 if (product.warehouseQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient warehouse stock for transfer. Available: ${product.warehouseQty}`);
+                    throw new BadRequestError(`Insufficient warehouse stock for transfer. Available: ${product.warehouseQty}`);
                 }
                 updateQuery = { $inc: { warehouseQty: -quantity, shopQty: quantity } };
                 break;
 
             case 'TRANSFER_TO_WAREHOUSE':
                 if (product.shopQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient shop stock for transfer. Available: ${product.shopQty}`);
+                    throw new BadRequestError(`Insufficient shop stock for transfer. Available: ${product.shopQty}`);
                 }
                 updateQuery = { $inc: { shopQty: -quantity, warehouseQty: quantity } };
                 break;
@@ -500,7 +538,7 @@ export const StockService = {
                 break;
 
             default:
-                throw new Error('Invalid movement type');
+                throw new BadRequestError('Invalid movement type');
         }
 
         const updatedProduct = await Product.findByIdAndUpdate(productId, updateQuery, { new: true, session });

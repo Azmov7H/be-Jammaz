@@ -4,6 +4,7 @@ import Customer from '../../models/Customer.js';
 import { StockService } from '../stockService.js';
 import { TreasuryService } from '../treasuryService.js';
 import { toIdString } from '../../utils/idUtils.js';
+import { NotFoundError } from '../../lib/errors.js';
 
 /**
  * Return Service
@@ -30,7 +31,7 @@ export const ReturnService = {
     async createReturn(invoiceId, data, userId) {
         const Invoice = (await import('../../models/Invoice.js')).default;
         const invoice = await Invoice.findById(invoiceId);
-        if (!invoice) throw new Error('Invoice not found');
+        if (!invoice) throw new NotFoundError('Invoice not found');
 
         // Map frontend items [{invoiceItemId, qty}] to service expected format
         const returnItems = [];

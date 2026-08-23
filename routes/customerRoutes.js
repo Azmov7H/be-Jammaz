@@ -1,5 +1,6 @@
 import express from 'express';
 import { CustomerService } from '../services/customerService.js';
+import { PricingService } from '../services/pricingService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 
@@ -32,29 +33,17 @@ router.delete('/:id', roleMiddleware(['admin']), routeHandler(async (req) => {
 // New Endpoints for Integration
 // Get Customer Pricing
 router.get('/:id/pricing', routeHandler(async (req) => {
-    const { PricingService } = await import('../services/pricingService.js');
-    const prices = await PricingService.getCustomerPricing(req.params.id);
-    return {
-        prices: prices.map(p => ({
-            productId: p.productId?._id || p.productId,
-            productName: p.productId?.name || 'منتج محذوف',
-            retailPrice: p.productId?.retailPrice || 0,
-            wholesalePrice: p.productId?.wholesalePrice || 0,
-            customPrice: p.customPrice
-        }))
-    };
+    return await PricingService.getCustomerPricingView(req.params.id);
 }));
 
 // Set Customer Custom Price
 router.post('/:id/pricing', routeHandler(async (req) => {
-    const { PricingService } = await import('../services/pricingService.js');
     const { productId, price } = req.body;
     return await PricingService.setCustomPrice(req.params.id, productId, price, req.user._id);
 }));
 
 // Remove Customer Custom Price
 router.delete('/:id/pricing', routeHandler(async (req) => {
-    const { PricingService } = await import('../services/pricingService.js');
     const { productId } = req.query;
     return await PricingService.removeCustomPrice(req.params.id, productId);
 }));
