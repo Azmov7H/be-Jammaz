@@ -1,7 +1,11 @@
 import express from 'express';
 import { routeHandler } from '../lib/route-handler.js';
+import { authMiddleware } from '../middlewares/authMiddleware.js';
 
 const router = express.Router();
+
+// T-SEC-03: internal API docs require an authenticated session.
+router.use(authMiddleware);
 
 const apiDocs = {
     version: "1.0.0",
