@@ -1,4 +1,5 @@
 import PurchaseOrder from '../models/PurchaseOrder.js';
+import { withTransaction } from '../utils/dbUtils.js';
 import { nextDocumentNumber } from '../lib/counters.js';
 import Supplier from '../models/Supplier.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
@@ -83,26 +84,27 @@ export const PurchaseOrderService = {
 
     async updateStatus(id, { status, paymentType }, userId) {
         await dbConnect();
-        const purchaseOrder = await PurchaseOrder.findById(id).populate('items.productId');
 
-        if (!purchaseOrder) throw new NotFoundError('أمر الشراء غير موجود');
+        if (status === 'RECEIVED') {
+            // T-BIZ-04: all-or-nothing receive. The guarded transition happens
+            // INSIDE the transaction — concurrent/double submit loses the race
+            // deterministically with 409 and zero partial writes.
+            await withTransaction(async (session) => {
+                const po = await PurchaseOrder.findById(id).populate('items.productId').session(session);
+                if (!po) throw new NotFoundError('أمر الشراء غير موجود');
 
-        const finalPaymentType = paymentType || purchaseOrder.paymentType || 'cash';
-
-        // If marking as RECEIVED, execute finance business logic
-        if (status === 'RECEIVED' && purchaseOrder.status !== 'RECEIVED') {
-            // Use the already imported FinanceService
-            await FinanceService.recordPurchaseReceive(purchaseOrder, userId, finalPaymentType);
-
-            // Update the PO status after successful finance operation
-            purchaseOrder.status = 'RECEIVED';
-            purchaseOrder.paymentType = finalPaymentType;
-            await purchaseOrder.save();
+                const result = await FinanceService.recordPurchaseReceive(
+                    po, userId, paymentType || po.paymentType || 'cash', session
+                );
+                return result;
+            });
 
             return await this.getById(id);
         }
 
-        // Other status updates (e.g., CANCELED, PENDING)
+        // Other status updates (e.g., CANCELLED, PENDING)
+        const purchaseOrder = await PurchaseOrder.findById(id);
+        if (!purchaseOrder) throw new NotFoundError('أمر الشراء غير موجود');
         purchaseOrder.status = status;
         await purchaseOrder.save();
 
