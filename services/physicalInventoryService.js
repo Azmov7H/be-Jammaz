@@ -1,4 +1,5 @@
 import PhysicalInventory from '../models/PhysicalInventory.js';
+import { withTransaction } from '../utils/dbUtils.js';
 import Product from '../models/Product.js';
 import { StockService } from './stockService.js';
 // import { AccountingService } from './accountingService.js';
@@ -150,12 +151,11 @@ export const PhysicalInventoryService = {
      */
     async completeCount(countId, userId) {
         await dbConnect();
-        // [MOD] Transaction Removed for Standalone Compatibility
-        // const session = await mongoose.startSession();
-        // session.startTransaction();
-
-        try {
-            const count = await PhysicalInventory.findById(countId).populate('items.productId'); // .session(session);
+        // T-BIZ-03: count completion + all per-item stock adjustments are
+        // atomic. Absolute sets inside the txn are safe against concurrent
+        // sales — write conflicts abort one side (documented per task).
+        return withTransaction(async (session) => {
+            const count = await PhysicalInventory.findById(countId).populate('items.productId').session(session);
 
             if (!count) {
                 throw new NotFoundError('سجل الجرد غير موجود');
@@ -166,7 +166,7 @@ export const PhysicalInventoryService = {
             }
 
             // Complete the count
-            await count.complete(userId); // session);
+            await count.complete(userId);
 
             // [NEW] Log Action
             await LogService.logAction({
@@ -176,14 +176,14 @@ export const PhysicalInventoryService = {
                 entityId: count._id,
                 diff: { valueImpact: count.valueImpact, netDifference: count.netDifference },
                 note: `Inventory count completed for ${count.location}`
-            }); // session);
+            }, { session });
 
             // Generate stock adjustments for discrepancies
             const adjustments = [];
 
             for (const item of count.items) {
                 if (item.difference !== 0) {
-                    const product = await Product.findById(item.productId); // .session(session);
+                    const product = await Product.findById(item.productId).session(session);
 
                     if (!product) continue;
 
@@ -216,29 +216,20 @@ export const PhysicalInventoryService = {
                         newWarehouseQty,
                         newShopQty,
                         `جرد فعلي - ${item.reason || 'تصحيح الكمية'}`,
-                        userId
+                        userId,
+                        session
                     ); // session);
 
                     adjustments.push(adjustment);
                 }
             }
 
-            // Create accounting entries - REMOVED (Accounting System Deprecated)
-            // await AccountingService.createInventoryAdjustmentEntries(count, userId); // session);
-
-            // await session.commitTransaction();
-
             return {
                 count,
                 adjustments,
                 totalAdjustments: adjustments.length
             };
-        } catch (error) {
-            // await session.abortTransaction();
-            throw error;
-        } finally {
-            // session.endSession();
-        }
+        });
     },
 
     /**

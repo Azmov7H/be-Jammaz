@@ -1,4 +1,14 @@
 import dbConnect from '../../lib/db.js';
+import PO from '../../models/PurchaseOrder.js';
+import { withTransaction } from '../../utils/dbUtils.js';
+
+// Sprint 05 fault-injection hook (tests only)
+const faultInject = (point) => {
+    if (process.env.FAULT_INJECT === point) {
+        throw new Error(`[FAULT_INJECT] aborted at ${point}`);
+    }
+};
+import { NotFoundError, ConflictError } from '../../lib/errors.js';
 import { StockService } from '../stockService.js';
 import { TreasuryService } from '../treasuryService.js';
 import { DebtService } from './debtService.js';
@@ -12,50 +22,66 @@ export const PurchaseService = {
     /**
      * Record a Purchase (Receiving PO)
      */
-    async recordPurchaseReceive(po, userId, paymentType = 'cash') {
+    async recordPurchaseReceive(po, userId, paymentType = 'cash', session = null) {
         await dbConnect();
-        try {
-            // 1. Stock increase
-            await StockService.increaseStockForPurchase(po.items, po._id, userId);
+        // T-BIZ-04: caller may own the transaction (updateStatus); otherwise
+        // we wrap our own.
+        if (session) return this._doReceive(po, userId, paymentType, session);
+        return withTransaction((txnSession) => this._doReceive(po, userId, paymentType, txnSession));
+    },
 
-            // 2. Update PO status
-            po.status = 'RECEIVED';
-            po.receivedDate = new Date();
-            po.paymentType = paymentType;
-            await po.save();
+    async _doReceive(po, userId, paymentType, sess) {
+        // T-BIZ-04: single-save flow; guarded idempotent transition at the end.
+        // 1. Stock increase
+            await StockService.increaseStockForPurchase(po.items, po._id, userId, sess);
 
-            // 3. Treasury & Supplier Balance
+            faultInject('recordPurchaseReceive:afterStock');
+
+            // 2. Treasury & Supplier Balance
             if (paymentType !== 'credit') {
                 po.paidAmount = po.totalCost;
                 po.paymentStatus = 'paid';
-                await po.save();
-                await TreasuryService.recordPurchaseExpense(po, userId);
-            } else if (po.supplier) {
-                // Credit
+                await TreasuryService.recordPurchaseExpense(po, userId, sess);
+            } else {
                 po.paidAmount = 0;
                 po.paymentStatus = 'pending';
-                await po.save();
+                if (po.supplier) {
+                    const settings = await InvoiceSettings.getSettings();
+                    const defaultDays = settings.defaultSupplierTerms || 30;
 
-                const settings = await InvoiceSettings.getSettings();
-                const defaultDays = settings.defaultSupplierTerms || 30;
-
-                await DebtService.createDebt({
-                    debtorType: 'Supplier',
-                    debtorId: po.supplier,
-                    amount: po.totalCost,
-                    dueDate: po.expectedDate || new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000),
-                    referenceType: 'PurchaseOrder',
-                    referenceId: po._id,
-                    description: `أمر شراء #${po.poNumber}`,
-                    createdBy: userId
-                });
+                    await DebtService.createDebt({
+                        debtorType: 'Supplier',
+                        debtorId: po.supplier,
+                        amount: po.totalCost,
+                        dueDate: po.expectedDate || new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000),
+                        referenceType: 'PurchaseOrder',
+                        referenceId: po._id,
+                        description: `أمر شراء #${po.poNumber}`,
+                        createdBy: userId
+                    }, sess);
+                }
             }
 
+            // 3. Guarded idempotent transition — second receive attempt in any
+            // concurrent path lands here with 409 and aborts its whole txn.
+            const claimed = await PO.findOneAndUpdate(
+                { _id: po._id, status: { $ne: 'RECEIVED' } },
+                {
+                    $set: {
+                        status: 'RECEIVED',
+                        receivedDate: new Date(),
+                        paymentType,
+                        paidAmount: po.paidAmount,
+                        paymentStatus: po.paymentStatus
+                    }
+                },
+                { new: true, session: sess }
+            );
+            if (!claimed) throw new ConflictError('أمر الشراء مستلم بالفعل');
+
+            Object.assign(po, claimed.toObject());
             return po;
-        } catch (error) {
-            throw error;
-        }
-    }
+    },
 };
 
 
