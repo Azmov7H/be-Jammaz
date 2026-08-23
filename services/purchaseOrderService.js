@@ -72,10 +72,12 @@ export const PurchaseOrderService = {
 
     async getById(id) {
         await dbConnect();
-        return PurchaseOrder.findById(id)
+        const po = await PurchaseOrder.findById(id)
             .populate('supplier', 'name phone address')
             .populate('items.productId', 'name code')
             .lean();
+        if (!po) throw new NotFoundError('أمر الشراء غير موجود');
+        return po;
     },
 
     async updateStatus(id, { status, paymentType }, userId) {

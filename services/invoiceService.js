@@ -5,6 +5,7 @@ import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import { SaleService } from './financial/saleService.js';
 import dbConnect from '../lib/db.js';
+import { NotFoundError } from '../lib/errors.js';
 import mongoose from 'mongoose';
 import { AppError } from '../middlewares/errorHandler.js';
 import { withTransaction } from '../utils/dbUtils.js';
@@ -149,9 +150,12 @@ export const InvoiceService = {
         if (!customerId) return { finalName: providedName, finalPhone: providedPhone };
 
         const customer = await CustomerRepository.findById(customerId, session);
+        // T-VAL-04 defense vs stale ids: schema refine guarantees credit sales
+        // carry a customerId; here we guarantee that id is real.
+        if (!customer) throw new NotFoundError('العميل غير موجود');
         return {
-            finalName: customer?.name || providedName,
-            finalPhone: customer?.phone || providedPhone
+            finalName: customer.name,
+            finalPhone: customer.phone
         };
     },
 

@@ -23,7 +23,7 @@ router.get('/', routeHandler(async (req) => {
 }));
 
 // Get single count by ID
-router.get('/:id', routeHandler(async (req) => {
+router.get('/:id', validateParams(idParams), routeHandler(async (req) => {
     return await PhysicalInventoryService.getCountById(req.params.id);
 }));
 
