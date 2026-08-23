@@ -1,30 +1,16 @@
-import InvoiceSettings from '../models/InvoiceSettings.js';
-import { AppError } from '../middlewares/errorHandler.js';
-
 export const SettingsController = {
-    async getInvoiceDesign(req, res) {
-        const settings = await InvoiceSettings.getSettings();
-        res.json({
-            status: 'success',
-            data: settings
-        });
+    async getInvoiceDesign() {
+        // routeHandler wraps into the standard success envelope
+        return InvoiceSettings.getSettings();
     },
 
-    async updateInvoiceDesign(req, res) {
-        const updates = req.body;
-        // Basic validation or filtering can be added here
-
-        let settings = await InvoiceSettings.findOne({ isActive: true });
+    async updateInvoiceDesign(req) {
+        const settings = await InvoiceSettings.findOne({ isActive: true });
         if (!settings) {
-            settings = await InvoiceSettings.create(updates);
-        } else {
-            Object.assign(settings, updates);
-            await settings.save();
+            return InvoiceSettings.create(req.body);
         }
-
-        res.json({
-            status: 'success',
-            data: settings
-        });
+        Object.assign(settings, req.body);
+        await settings.save();
+        return settings;
     }
 };
