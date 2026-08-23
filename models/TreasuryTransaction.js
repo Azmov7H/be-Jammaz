@@ -8,7 +8,7 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     },
     receiptNumber: {
         type: String,
-        unique: false, // We'll handle uniqueness in service/app logic for simplicity with legacy data
+        unique: true, // T-DB-03 (pre-flight dupe check + dedupe script required before rollout)
         index: true
     },
     amount: {

@@ -85,4 +85,8 @@ debtSchema.virtual('progress').get(function () {
 
 export default mongoose.models.Debt || mongoose.model('Debt', debtSchema);
 
-
+// T-DB-03: duplicate-guard for debts derived from documents
+debtSchema.index(
+    { referenceType: 1, referenceId: 1, debtorType: 1, debtorId: 1 },
+    { unique: true, partialFilterExpression: { status: { $ne: 'CANCELLED' } } }
+);

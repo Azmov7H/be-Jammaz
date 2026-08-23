@@ -21,7 +21,7 @@ const CustomerSchema = new mongoose.Schema({
         type: Number,
         default: 0
     },
-    creditLimit: { type: Number, default: 0 },
+    creditLimit: { type: Number, default: 0, min: 0 }, // T-DB-02
 
     isActive: { type: Boolean, default: true },
     financialTrackingEnabled: { type: Boolean, default: true },
@@ -30,14 +30,14 @@ const CustomerSchema = new mongoose.Schema({
         enum: ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'None'],
         default: 'None'
     },
-    paymentTerms: { type: Number, default: 0 },
+    paymentTerms: { type: Number, default: 0, min: 0, max: 365 }, // T-DB-02
 
     totalPurchases: { type: Number, default: 0 },
     lastPurchaseDate: Date,
 
     customPricing: [{
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
-        customPrice: { type: Number, required: true },
+        customPrice: { type: Number, required: true, min: 0 }, // T-DB-02
         setBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         setAt: { type: Date, default: Date.now }
     }]

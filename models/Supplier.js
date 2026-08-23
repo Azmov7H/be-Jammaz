@@ -26,4 +26,6 @@ export default mongoose.models.Supplier || mongoose.model('Supplier', SupplierSc
 
 // T-DB-01
 SupplierSchema.index({ name: 1 });
+// T-DB-03: match Customer uniqueness semantics; sparse so blank phones coexist.
+SupplierSchema.index({ phone: 1 }, { unique: true, sparse: true });
 SupplierSchema.index({ isActive: 1 });

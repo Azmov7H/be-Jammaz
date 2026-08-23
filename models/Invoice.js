@@ -6,17 +6,17 @@ const InvoiceSchema = new mongoose.Schema({
     items: [{
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }, // Optional for service items
         productName: { type: String, required: true },
-        qty: { type: Number, required: true },
-        unitPrice: { type: Number, required: true },
+        qty: { type: Number, required: true, min: 0 }, // T-DB-02
+        unitPrice: { type: Number, required: true, min: 0 }, // T-DB-02
         source: { type: String, enum: ['shop', 'warehouse'], default: 'shop' },
         isService: { type: Boolean, default: false }, // Service/custom items (no stock tracking)
-        total: { type: Number, required: true },
+        total: { type: Number, required: true, min: 0 }, // T-DB-02
         costPrice: { type: Number },
         profit: { type: Number }
     }],
-    subtotal: { type: Number, required: true },
-    tax: { type: Number, default: 0 },
-    total: { type: Number, required: true },
+    subtotal: { type: Number, required: true, min: 0 }, // T-DB-02
+    tax: { type: Number, default: 0, min: 0 }, // T-DB-02
+    total: { type: Number, required: true, min: 0 }, // T-DB-02
     usedCreditBalance: { type: Number, default: 0 },
 
     paymentType: {
@@ -29,7 +29,7 @@ const InvoiceSchema = new mongoose.Schema({
         enum: ['paid', 'partial', 'pending'],
         default: 'paid'
     },
-    paidAmount: { type: Number, default: 0 },
+    paidAmount: { type: Number, default: 0, min: 0 }, // T-DB-02
     dueDate: { type: Date },
 
     payments: [{

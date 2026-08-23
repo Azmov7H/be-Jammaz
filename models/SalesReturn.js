@@ -14,7 +14,7 @@ const SalesReturnSchema = new mongoose.Schema({ // T-DB-01 indexes at bottom
         productName: { type: String, required: true },
         qty: { type: Number, required: true },
         unitPrice: { type: Number, required: true },
-        refundAmount: { type: Number, required: true },
+        refundAmount: { type: Number, required: true, min: 0 }, // T-DB-02
         reason: String
     }],
 
