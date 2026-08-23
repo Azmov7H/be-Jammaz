@@ -1,4 +1,5 @@
 import { AuthService } from '../services/authService.js';
+import { verifyToken } from '../lib/auth.js';
 import { z } from 'zod';
 
 const loginSchema = z.object({
@@ -45,7 +46,10 @@ export const AuthController = {
     },
 
     async logout(req, res) {
-        if (req.user) await AuthService.revokeAll(req.user._id);
+        // Route is unauthenticated by design; recover userId from the
+        // access cookie if present so revocation still happens.
+        const decoded = await verifyToken(req.cookies.token);
+        if (decoded?.userId) await AuthService.revokeAll(decoded.userId);
         res.clearCookie('token', { path: '/' });
         res.clearCookie('refresh', { path: '/api/auth' });
         return { message: 'Logged out' };
