@@ -2,6 +2,8 @@ import express from 'express';
 import { PricingService } from '../services/pricingService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
+import { validate } from '../lib/validate.js';
+import { customPriceSchema, removeCustomPriceSchema } from '../validations/index.js';
 
 const router = express.Router();
 
@@ -14,13 +16,13 @@ router.get('/history/:productId', routeHandler(async (req) => {
 }));
 
 // Set Custom Price
-router.post('/custom', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.post('/custom', roleMiddleware(['owner', 'manager']), validate(customPriceSchema), routeHandler(async (req) => {
     const { customerId, productId, price } = req.body;
     return await PricingService.setCustomPrice(customerId, productId, price, req.user._id);
 }));
 
 // Remove Custom Price
-router.delete('/custom', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.delete('/custom', roleMiddleware(['owner', 'manager']), validate(removeCustomPriceSchema), routeHandler(async (req) => {
     const { customerId, productId } = req.body;
     return await PricingService.removeCustomPrice(customerId, productId);
 }));

@@ -2,6 +2,8 @@ import express from 'express';
 import { StockService } from '../services/stockService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
+import { validate } from '../lib/validate.js';
+import { stockTransferSchema, stockMoveSchema, stockAdjustSchema } from '../validations/index.js';
 
 const router = express.Router();
 
@@ -26,13 +28,13 @@ router.get('/status', routeHandler(async () => {
     return await StockService.listStatus();
 }));
 
-router.post('/transfer', roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
+router.post('/transfer', validate(stockTransferSchema),  roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
     const { productId, from, to, qty, quantity, note } = req.body;
     return await StockService.transferStock(productId, from, to, qty || quantity, note, req.user._id);
 }));
 
 // Alias for stock movements for frontend compatibility
-router.post('/move', roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
+router.post('/move', validate(stockMoveSchema),  roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
     const { items, productId, qty, type, note, refId } = req.body;
 
     if (items && Array.isArray(items) && items.length > 0) {
@@ -55,7 +57,7 @@ router.post('/move', roleMiddleware(['warehouse', 'owner', 'manager']), routeHan
     });
 }));
 
-router.post('/adjust', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.post('/adjust', roleMiddleware(['owner', 'manager']), validate(stockAdjustSchema), routeHandler(async (req) => {
     const { productId, location, newQty, reason } = req.body;
     return await StockService.adjustStock(productId, location, newQty, reason, req.user._id);
 }));

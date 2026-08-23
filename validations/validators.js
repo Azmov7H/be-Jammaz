@@ -280,6 +280,14 @@ export const treasuryTransactionSchema = z.object({
     method: paymentMethod,
 });
 
+export const manualIncomeSchema = z.object({
+    amount: positiveMoney,
+    reason: z.string().min(2, 'الوصف مطلوب').max(500),
+    date: dateField,
+});
+
+export const listQuerySchema = paginationSchema.passthrough();
+
 export const reconcileSchema = z.object({
     date: dateField,
     actualClosingBalance: z.coerce.number().min(-1e9).max(1e9),

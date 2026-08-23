@@ -2,6 +2,8 @@ import express from 'express';
 import { TreasuryService } from '../services/treasuryService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
+import { validate } from '../lib/validate.js';
+import { reconcileSchema, manualIncomeSchema, expenseSchema } from '../validations/index.js';
 
 const router = express.Router();
 
@@ -25,7 +27,7 @@ router.get('/daily', routeHandler(async (req) => {
 }));
 
 // Reconcile cashbox
-router.post('/reconcile', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.post('/reconcile', roleMiddleware(['owner', 'manager']), validate(reconcileSchema), routeHandler(async (req) => {
     const { date, actualClosingBalance, notes } = req.body;
     return await TreasuryService.reconcileCashbox(date || new Date(), actualClosingBalance, req.user._id, notes);
 }));
@@ -41,13 +43,13 @@ router.get('/transactions', routeHandler(async (req) => {
 }));
 
 // Add manual income
-router.post('/manual-income', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.post('/manual-income', roleMiddleware(['owner', 'manager']), validate(manualIncomeSchema), routeHandler(async (req) => {
     const { amount, reason, date } = req.body;
     return await TreasuryService.addManualIncome(date || new Date(), amount, reason, req.user._id);
 }));
 
 // Add manual expense
-router.post('/manual-expense', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+router.post('/manual-expense', roleMiddleware(['owner', 'manager']), validate(expenseSchema.omit({ method: true })), routeHandler(async (req) => {
     const { amount, reason, category, date } = req.body;
     return await TreasuryService.addManualExpense(date || new Date(), amount, reason, category, req.user._id);
 }));
