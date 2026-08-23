@@ -3,7 +3,7 @@ import Product from '../models/Product.js';
 import { StockService } from './stockService.js';
 // import { AccountingService } from './accountingService.js';
 import { LogService } from './logService.js';
-import User from '../models/User.js';
+import { UserRepository } from '../repositories/userRepository.js';
 import bcrypt from 'bcryptjs';
 import dbConnect from '../lib/db.js';
 import mongoose from 'mongoose';
@@ -354,7 +354,7 @@ export const PhysicalInventoryService = {
             if (count.status !== 'completed') throw new ConflictError('الجرد غير مكتمل بالفعل');
 
             // Find the owner user to verify password
-            const owner = await User.findOne({ role: 'owner' }); // .session(session);
+            const owner = await UserRepository.findOwnerWithPassword(); // .session(session);
             if (!owner) throw new NotFoundError('لا يوجد مالك مسجل في النظام');
 
             // Verify password

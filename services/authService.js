@@ -15,7 +15,7 @@ export const AuthService = {
      * Authenticate user with email and password
      */
     async login({ email, password }) {
-        const user = await UserRepository.findByEmail(email);
+        const user = await UserRepository.findByEmailWithPassword(email);
 
         if (!user || user.isActive === false) {
             if (user?.isActive === false) throw new AppError('تم تعطيل هذا الحساب. يرجى الاتصال بالمسؤول.', 403);
@@ -94,8 +94,12 @@ export const AuthService = {
         if (!user) return null;
 
         return {
-            ...user.toObject(),
-            id: user._id.toString()
+            id: user._id.toString(),
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            picture: user.picture,
+            isActive: user.isActive
         };
     }
 };

@@ -16,6 +16,13 @@ const UserSchema = new mongoose.Schema({
     password: {
         type: String,
         required: false, // Optional for OAuth users
+        select: false,
+        minlength: [8, 'كلمة المرور قصيرة جدا'],
+    },
+    tokenVersion: {
+        type: Number,
+        default: 0,
+        select: false,
     },
     role: {
         type: String,
