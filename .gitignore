@@ -42,3 +42,7 @@ next-env.d.ts
 
 # keep the example env template tracked
 !.env.example
+
+# pnpm artifacts (npm is the package manager)
+pnpm-lock.yaml
+pnpm-workspace.yaml
