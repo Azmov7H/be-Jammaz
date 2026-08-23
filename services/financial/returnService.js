@@ -1,4 +1,12 @@
 import dbConnect from '../../lib/db.js';
+import { withTransaction } from '../../utils/dbUtils.js';
+
+// Sprint 05 fault-injection hook (tests only)
+const faultInject = (point) => {
+    if (process.env.FAULT_INJECT === point) {
+        throw new Error(`[FAULT_INJECT] aborted at ${point}`);
+    }
+};
 import { nextDocumentNumber } from '../../lib/counters.js';
 import SalesReturn from '../../models/SalesReturn.js';
 import Customer from '../../models/Customer.js';
@@ -61,7 +69,9 @@ export const ReturnService = {
      */
     async processSaleReturn(invoice, returnData, refundMethod, userId) {
         await dbConnect();
-        try {
+        // T-BIZ-02: invoice rewrite + SalesReturn + stock + treasury/balance
+        // refund all-or-nothing.
+        return withTransaction(async (session) => {
             const { returnItems, totalRefund } = returnData;
 
             // 1. Update Original Invoice items
@@ -95,7 +105,9 @@ export const ReturnService = {
                 invoice.paidAmount = Math.max(0, invoice.paidAmount - totalRefund);
             }
             invoice.hasReturns = true;
-            await invoice.save();
+            await invoice.save({ session });
+
+            faultInject('processSaleReturn:afterInvoice');
 
             // 2. Create SalesReturn document
             const salesReturn = await SalesReturn.create([{
@@ -108,18 +120,20 @@ export const ReturnService = {
                 customerBalanceAdded: refundMethod === 'customerBalance' ? totalRefund : 0,
                 treasuryDeducted: refundMethod === 'cash' ? totalRefund : 0,
                 createdBy: userId
-            }]);
+            }], { session });
 
             const salesReturnDoc = salesReturn[0];
 
             // 3. Stock re-entry
-            await StockService.increaseStockForReturn(returnItems, salesReturnDoc.returnNumber, userId);
+            await StockService.increaseStockForReturn(returnItems, salesReturnDoc.returnNumber, userId, session);
+
+            faultInject('processSaleReturn:afterStock');
 
             // 4. Financial Settlement
             if (refundMethod === 'cash') {
-                await TreasuryService.recordReturnRefund(salesReturnDoc, totalRefund, userId);
+                await TreasuryService.recordReturnRefund(salesReturnDoc, totalRefund, userId, session);
             } else if (refundMethod === 'customerBalance' && invoice.customer) {
-                const customer = await Customer.findById(invoice.customer);
+                const customer = await Customer.findById(invoice.customer).session(session);
                 if (customer) {
                     let remaining = totalRefund;
                     if (customer.balance > 0) {
@@ -130,14 +144,12 @@ export const ReturnService = {
                     if (remaining > 0) {
                         customer.creditBalance = (customer.creditBalance || 0) + remaining;
                     }
-                    await customer.save();
+                    await customer.save({ session });
                 }
             }
 
             return { salesReturn: salesReturnDoc, invoice };
-        } catch (error) {
-            throw error;
-        }
+        });
     }
 };
 
