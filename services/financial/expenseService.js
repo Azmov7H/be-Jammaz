@@ -1,6 +1,7 @@
 import dbConnect from '../../lib/db.js';
 import { TreasuryService } from '../treasuryService.js';
 import { LogService } from '../logService.js';
+import { BadRequestError } from '../../lib/errors.js';
 
 /**
  * Expense Service
@@ -16,7 +17,7 @@ export const ExpenseService = {
             const { amount, reason, category, date = new Date() } = data;
 
             if (!amount || amount <= 0 || !reason || !category) {
-                throw 'بيانات المصروفات غير مكتملة';
+                throw new BadRequestError('بيانات المصروفات غير مكتملة');
             }
 
             // 1. Record in Treasury

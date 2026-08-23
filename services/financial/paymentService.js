@@ -3,6 +3,7 @@ import Invoice from '../../models/Invoice.js';
 import Customer from '../../models/Customer.js';
 import { TreasuryService } from '../treasuryService.js';
 import { DebtService } from './debtService.js';
+import { NotFoundError, BadRequestError } from '../../lib/errors.js';
 
 /**
  * Payment Service
@@ -82,7 +83,7 @@ export const PaymentService = {
         await dbConnect();
         try {
             const customer = await Customer.findById(customerId);
-            if (!customer) throw new Error('العميل غير موجود');
+            if (!customer) throw new NotFoundError('العميل غير موجود');
 
             const Debt = (await import('../../models/Debt.js')).default;
 
@@ -93,7 +94,7 @@ export const PaymentService = {
             }).sort({ dueDate: 1 });
 
             if (activeDebts.length === 0 && customer.balance <= 0) {
-                throw new Error('لا توجد ديون مستحقة لهذا العميل');
+                throw new NotFoundError('لا توجد ديون مستحقة لهذا العميل');
             }
 
             let remainingAmount = amount;
@@ -261,7 +262,7 @@ export const PaymentService = {
         const { type, id, amount, method = 'cash', note = '' } = data;
 
         if (!type || !id || !amount || amount <= 0) {
-            throw 'بيانات غير صحيحة لسداد الدين';
+            throw new BadRequestError('بيانات غير صحيحة لسداد الدين');
         }
 
         if (type === 'receivable') {
@@ -275,7 +276,7 @@ export const PaymentService = {
                 if (debt) {
                     return await this.recordManualDebtPayment(debt, amount, method, note, userId);
                 } else {
-                    throw 'الفاتورة أو المديونية غير موجودة';
+                    throw new NotFoundError('الفاتورة أو المديونية غير موجودة');
                 }
             }
         } else if (type === 'payable') {
@@ -290,11 +291,11 @@ export const PaymentService = {
                 if (debt) {
                     return await this.recordManualDebtPayment(debt, amount, method, note, userId);
                 } else {
-                    throw 'أمر الشراء أو المديونية غير موجودة';
+                    throw new NotFoundError('أمر الشراء أو المديونية غير موجودة');
                 }
             }
         }
-        throw 'نوع عملية غير معروف';
+        throw new BadRequestError('نوع عملية غير معروف');
     }
 };
 

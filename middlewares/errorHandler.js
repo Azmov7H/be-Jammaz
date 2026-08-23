@@ -1,25 +1,16 @@
+import { mapError } from '../lib/errors.js';
+
+// Re-export so existing imports keep working; canonical source is lib/errors.js
+export { AppError } from '../lib/errors.js';
+
 export const errorHandler = (err, req, res, next) => {
-    console.error('❌ Error:', err);
-
-    const statusCode = err.statusCode || 500;
-    const isProduction = process.env.NODE_ENV === 'production';
-
-    // In production, genericize server errors to prevent info leakage
-    const message = (isProduction && statusCode === 500)
-        ? 'حدث خطأ في النظام، يرجى المحاولة لاحقاً'
-        : err.message || 'Internal Server Error';
+    const { statusCode, message, code } = mapError(err);
 
     res.status(statusCode).json({
         success: false,
-        error: message,
-        stack: isProduction ? undefined : err.stack
+        message,
+        code,
+        data: null,
+        timestamp: new Date().toISOString()
     });
 };
-
-export class AppError extends Error {
-    constructor(message, statusCode) {
-        super(message);
-        this.statusCode = statusCode;
-        Error.captureStackTrace(this, this.constructor);
-    }
-}

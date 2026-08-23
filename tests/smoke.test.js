@@ -34,7 +34,8 @@ describe('POST /api/auth/login', () => {
     it('rejects invalid payload with zod fieldErrors', async () => {
         const res = await app.post('/api/auth/login').send({ email: 'not-an-email' }).expect(400);
         expect(res.body.success).toBe(false);
-        expect(res.body.data).toHaveProperty('email');
+        expect(res.body.details).toHaveProperty('email');
+        expect(res.body.code).toBe('BAD_REQUEST');
     });
 
     it('logs in a seeded user and sets an httpOnly token cookie', async () => {
@@ -95,7 +96,7 @@ describe('POST /api/products (create happy path)', () => {
         const res = await app.post('/api/products').set('Cookie', cookie)
             .send({ code: 'NO-NAME' }).expect(400);
         expect(res.body.success).toBe(false);
-        expect(res.body.data).toHaveProperty('name');
+        expect(res.body.details).toHaveProperty('name');
     });
 });
 

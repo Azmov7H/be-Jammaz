@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import dbConnect from '../lib/db.js';
 import bcrypt from 'bcryptjs';
+import { NotFoundError, ConflictError } from '../lib/errors.js';
 
 export const UserService = {
     async getAll() {
@@ -13,7 +14,7 @@ export const UserService = {
         await dbConnect();
         const user = await User.findById(id).select('-password');
         if (!user) {
-            throw 'User not found';
+            throw new NotFoundError('User not found');
         }
         return user;
     },
@@ -23,7 +24,7 @@ export const UserService = {
 
         const existing = await User.findOne({ email: data.email });
         if (existing) {
-            throw 'البريد الإلكتروني مستخدم بالفعل';
+            throw new ConflictError('البريد الإلكتروني مستخدم بالفعل');
         }
 
         const hashedPassword = await bcrypt.hash(data.password, 10);
@@ -43,7 +44,7 @@ export const UserService = {
         if (data.email) {
             const existing = await User.findOne({ email: data.email, _id: { $ne: id } });
             if (existing) {
-                throw 'البريد الإلكتروني مستخدم بالفعل';
+                throw new ConflictError('البريد الإلكتروني مستخدم بالفعل');
             }
         }
 
@@ -56,7 +57,7 @@ export const UserService = {
 
         const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true }).select('-password');
         if (!updatedUser) {
-            throw 'User not found';
+            throw new NotFoundError('User not found');
         }
         return updatedUser;
     },
@@ -65,7 +66,7 @@ export const UserService = {
         await dbConnect();
         const deletedUser = await User.findByIdAndDelete(id);
         if (!deletedUser) {
-            throw 'User not found';
+            throw new NotFoundError('User not found');
         }
         return { message: 'Use deleted successfully' };
     }

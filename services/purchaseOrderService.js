@@ -3,6 +3,7 @@ import Supplier from '../models/Supplier.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 import { FinanceService } from '../services/financeService.js';
 import dbConnect from '../lib/db.js';
+import { NotFoundError, ConflictError } from '../lib/errors.js';
 
 export const PurchaseOrderService = {
     async create(data, userId) {
@@ -45,8 +46,8 @@ export const PurchaseOrderService = {
     async receive(id, paymentType, userId) {
         await dbConnect();
         const po = await PurchaseOrder.findById(id).populate('items.productId');
-        if (!po) throw 'PO not found';
-        if (po.status === 'RECEIVED') throw 'Already received';
+        if (!po) throw new NotFoundError('PO not found');
+        if (po.status === 'RECEIVED') throw new ConflictError('Already received');
 
         // Finance & Stock Update (handled deep inside FinanceService based on previous route logic?)
         // The previous route called `FinanceService.recordPurchaseReceive(po, userId, paymentType)`.
@@ -81,7 +82,7 @@ export const PurchaseOrderService = {
         await dbConnect();
         const purchaseOrder = await PurchaseOrder.findById(id).populate('items.productId');
 
-        if (!purchaseOrder) throw 'أمر الشراء غير موجود';
+        if (!purchaseOrder) throw new NotFoundError('أمر الشراء غير موجود');
 
         const finalPaymentType = paymentType || purchaseOrder.paymentType || 'cash';
 
@@ -108,8 +109,8 @@ export const PurchaseOrderService = {
     async delete(id) {
         await dbConnect();
         const po = await PurchaseOrder.findById(id);
-        if (!po) throw 'أمر الشراء غير موجود';
-        if (po.status === 'RECEIVED') throw 'لا يمكن حذف أمر شراء مستلم';
+        if (!po) throw new NotFoundError('أمر الشراء غير موجود');
+        if (po.status === 'RECEIVED') throw new ConflictError('لا يمكن حذف أمر شراء مستلم');
 
         await PurchaseOrder.findByIdAndDelete(id);
         return { success: true };

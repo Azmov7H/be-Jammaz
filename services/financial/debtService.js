@@ -4,6 +4,7 @@ import '../../models/Customer.js';
 import '../../models/Supplier.js';
 import dbConnect from '../../lib/db.js';
 import { differenceInDays } from 'date-fns';
+import { BadRequestError, NotFoundError, ConflictError } from '../../lib/errors.js';
 
 export class DebtService {
     /**
@@ -23,7 +24,7 @@ export class DebtService {
 
         // 1. Validation
         if (amount <= 0) {
-            throw new Error('Debt amount must be greater than zero');
+            throw new BadRequestError('Debt amount must be greater than zero');
         }
 
         // 2. duplication check (same reference)
@@ -118,7 +119,7 @@ export class DebtService {
     static async updateBalance(id, amountPaid, session = null) {
         await dbConnect();
         const debt = await Debt.findById(id).session(session);
-        if (!debt) throw new Error('Debt not found');
+        if (!debt) throw new NotFoundError('Debt not found');
 
         debt.remainingAmount -= amountPaid;
 
@@ -151,7 +152,7 @@ export class DebtService {
     static async updateDebt(id, data) {
         await dbConnect();
         const debt = await Debt.findById(id).populate('debtorId', 'name');
-        if (!debt) throw new Error('Debt not found');
+        if (!debt) throw new NotFoundError('Debt not found');
 
         // Calculate old collected amount before changes
         const oldCollectedAmount = debt.originalAmount - debt.remainingAmount;
@@ -218,9 +219,9 @@ export class DebtService {
     static async writeOff(id, reason, userId) {
         await dbConnect();
         const debt = await Debt.findById(id);
-        if (!debt) throw new Error('Debt not found');
+        if (!debt) throw new NotFoundError('Debt not found');
 
-        if (debt.status === 'settled') throw new Error('Cannot write off settled debt');
+        if (debt.status === 'settled') throw new ConflictError('Cannot write off settled debt');
 
         debt.status = 'written-off';
         debt.meta = debt.meta || {};
@@ -310,16 +311,16 @@ export class DebtService {
         const { default: PaymentSchedule } = await import('../../models/PaymentSchedule.js');
 
         // Defensive check for ID
-        if (!debtId) throw new Error('Debt ID is required for scheduling');
+        if (!debtId) throw new BadRequestError('Debt ID is required for scheduling');
 
         const debt = await Debt.findById(debtId);
         if (!debt) {
-            throw new Error('الديون المطلوبة غير موجودة في النظام (Debt not found)');
+            throw new NotFoundError('الديون المطلوبة غير موجودة في النظام (Debt not found)');
         }
 
         const count = parseInt(installmentsCount);
         if (isNaN(count) || count <= 0) {
-            throw new Error('عدد الأقساط يجب أن يكون رقماً صحيحاً موجباً');
+            throw new BadRequestError('عدد الأقساط يجب أن يكون رقماً صحيحاً موجباً');
         }
 
         const amountPerInstallment = Math.round((debt.remainingAmount / count) * 100) / 100;
@@ -410,7 +411,7 @@ export class DebtService {
             : (await import('../../models/Customer.js')).default;
 
         const debtor = await Model.findById(debtorId);
-        if (!debtor) throw new Error('Debtor not found');
+        if (!debtor) throw new NotFoundError('Debtor not found');
 
         const balance = debtor.balance || 0;
         if (balance <= 0) return { message: 'Balance is zero or negative', count: 0 };
@@ -531,7 +532,7 @@ export class DebtService {
     static async deleteDebt(id, session = null) {
         await dbConnect();
         const debt = await Debt.findById(id).session(session);
-        if (!debt) throw new Error('Debt not found');
+        if (!debt) throw new NotFoundError('Debt not found');
 
         // 1. Reverse Parent Balance
         const Model = debt.debtorType === 'Customer'

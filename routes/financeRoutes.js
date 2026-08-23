@@ -3,6 +3,7 @@ import { FinanceService } from '../services/financeService.js';
 import { DebtService } from '../services/financial/debtService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
+import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
 const router = express.Router();
 
@@ -86,17 +87,17 @@ router.post('/payments', routeHandler(async (req) => {
         // Fetch the debt document first - the service expects an object, not just an ID
         const Debt = (await import('../models/Debt.js')).default;
         const debt = await Debt.findById(debtId);
-        if (!debt) throw new Error('الدين غير موجود');
+        if (!debt) throw new NotFoundError('الدين غير موجود');
         return await FinanceService.recordManualDebtPayment(debt, amount, method, note, req.user._id);
     } else if (supplierId) {
         const PurchaseOrder = (await import('../models/PurchaseOrder.js')).default;
         const po = await PurchaseOrder.findOne({ supplier: supplierId, status: 'RECEIVED', paymentStatus: { $ne: 'paid' } });
-        if (!po) throw new Error('لا توجد طلبات شراء مستلمة غير مدفوعة');
+        if (!po) throw new NotFoundError('لا توجد طلبات شراء مستلمة غير مدفوعة');
         return await FinanceService.recordSupplierPayment(po, amount, method, note, req.user._id);
     } else if (customerId) {
         return await FinanceService.recordTotalCustomerPayment(customerId, amount, method, note, req.user._id);
     } else {
-        throw new Error('يجب تحديد العميل أو المورد أو الدين');
+        throw new BadRequestError('يجب تحديد العميل أو المورد أو الدين');
     }
 }));
 
@@ -104,7 +105,7 @@ router.post('/payments', routeHandler(async (req) => {
 router.get('/receipts/:id', routeHandler(async (req) => {
     const { id } = req.params;
     if (!id || id === 'undefined' || id.length !== 24) {
-        throw new Error('رقم السند غير صحيح');
+        throw new BadRequestError('رقم السند غير صحيح');
     }
 
     const TreasuryTransaction = (await import('../models/TreasuryTransaction.js')).default;
@@ -115,7 +116,7 @@ router.get('/receipts/:id', routeHandler(async (req) => {
         .populate('createdBy', 'name')
         .lean();
 
-    if (!transaction) throw new Error('السند غير موجود');
+    if (!transaction) throw new NotFoundError('السند غير موجود');
 
     // Get company settings
     const settings = await InvoiceSettings.findOne().lean() || {

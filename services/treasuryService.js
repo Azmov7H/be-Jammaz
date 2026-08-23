@@ -4,6 +4,7 @@ import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 
 import Debt from '../models/Debt.js';
+import { NotFoundError } from '../lib/errors.js';
 
 /**
  * Treasury/Cashbox Management Service
@@ -401,7 +402,7 @@ export const TreasuryService = {
         const cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
 
         if (!cashbox) {
-            throw new Error('لم يتم العثور على سجل الخزينة لهذا اليوم');
+            throw new NotFoundError('لم يتم العثور على سجل الخزينة لهذا اليوم');
         }
 
         await cashbox.reconcile(actualClosingBalance, userId, notes, session);
@@ -592,7 +593,7 @@ export const TreasuryService = {
      */
     async undoTransaction(transactionId, userId, session = null) {
         const transaction = await TreasuryTransaction.findById(transactionId).session(session);
-        if (!transaction) throw new Error('المعاملة غير موجودة');
+        if (!transaction) throw new NotFoundError('المعاملة غير موجودة');
 
         // Allow reversing Invoice/PurchaseOrder/Manual
         // if (transaction.referenceType !== 'Manual') {

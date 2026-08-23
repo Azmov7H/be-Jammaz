@@ -7,6 +7,7 @@ import User from '../models/User.js';
 import bcrypt from 'bcryptjs';
 import dbConnect from '../lib/db.js';
 import mongoose from 'mongoose';
+import { NotFoundError, ConflictError, ForbiddenError } from '../lib/errors.js';
 
 /**
  * Physical Inventory Service
@@ -75,11 +76,11 @@ export const PhysicalInventoryService = {
         const count = await PhysicalInventory.findById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         if (count.status !== 'draft') {
-            throw new Error('لا يمكن تعديل جرد مكتمل');
+            throw new ConflictError('لا يمكن تعديل جرد مكتمل');
         }
 
         // Update actual quantities
@@ -119,7 +120,7 @@ export const PhysicalInventoryService = {
         const count = await PhysicalInventory.findById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         const discrepancies = count.items
@@ -157,11 +158,11 @@ export const PhysicalInventoryService = {
             const count = await PhysicalInventory.findById(countId).populate('items.productId'); // .session(session);
 
             if (!count) {
-                throw new Error('سجل الجرد غير موجود');
+                throw new NotFoundError('سجل الجرد غير موجود');
             }
 
             if (count.status !== 'draft') {
-                throw new Error('الجرد مكتمل بالفعل');
+                throw new ConflictError('الجرد مكتمل بالفعل');
             }
 
             // Complete the count
@@ -286,11 +287,11 @@ export const PhysicalInventoryService = {
         const count = await PhysicalInventory.findById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         if (count.status !== 'draft') {
-            throw new Error('لا يمكن حذف جرد مكتمل');
+            throw new ConflictError('لا يمكن حذف جرد مكتمل');
         }
 
         await PhysicalInventory.findByIdAndDelete(countId);
@@ -307,7 +308,7 @@ export const PhysicalInventoryService = {
         const count = await this.getCountById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         const discrepancies = count.items.filter(item => item.difference !== 0);
@@ -349,16 +350,16 @@ export const PhysicalInventoryService = {
 
         try {
             const count = await PhysicalInventory.findById(countId); // .session(session);
-            if (!count) throw new Error('سجل الجرد غير موجود');
-            if (count.status !== 'completed') throw new Error('الجرد غير مكتمل بالفعل');
+            if (!count) throw new NotFoundError('سجل الجرد غير موجود');
+            if (count.status !== 'completed') throw new ConflictError('الجرد غير مكتمل بالفعل');
 
             // Find the owner user to verify password
             const owner = await User.findOne({ role: 'owner' }); // .session(session);
-            if (!owner) throw new Error('لا يوجد مالك مسجل في النظام');
+            if (!owner) throw new NotFoundError('لا يوجد مالك مسجل في النظام');
 
             // Verify password
             const isValid = await bcrypt.compare(password, owner.password);
-            if (!isValid) throw new Error('كلمة المرور غير صحيحة');
+            if (!isValid) throw new ForbiddenError('كلمة المرور غير صحيحة');
 
             // Revert status to draft
             count.status = 'draft';
