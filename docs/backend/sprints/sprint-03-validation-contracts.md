@@ -1,5 +1,27 @@
 # Sprint 03 — Validation & API Contracts
 
+> **STATUS: COMPLETE** (branch `feat/backend-sprint-03-validation`).
+>
+> Acceptance evidence:
+> - `grep "req.body" routes/` → every read sits behind `validate(schema)`
+>   (authz gates run first); controllers no longer carry local schema copies
+> - 19-row validation suite green: fieldErrors contract, injection payloads
+>   (`$gt`, dotted keys), bounds (money ≤1e9, qty ≤1e6, arrays capped,
+>   installments ≤60, pagination ≤100/default 20), credit-sale refine
+>   (400 without customer; stale id → service-level 404), garbage
+>   ObjectId sweep → 404 across 7 routers
+> - T-API-02: purchases & physical-inventory getById no longer 200+null;
+>   authMiddleware 404→401 already done in Sprint 02
+> - lint clean; 80/80 tests across 7 files
+>
+> Contract notes:
+> - Previously-accepted invalid payloads now → 400 `{details.fieldErrors}`;
+>   global errorHandler now surfaces details on 400s (was dropped on the
+>   middleware error path)
+> - pagination default limit changed 10 → 20 (canonical shared schema)
+> - payment `method` kept as enum cash|bank|wallet|check (optional) —
+>   extend if frontend introduces new methods
+
 - **Branch**: `feat/backend-sprint-03-validation`
 - **Objective**: Every external input schema-validated; one source of truth for schemas;
   contract surface cleaned.
