@@ -1,5 +1,5 @@
 import dbConnect from '../../lib/db.js';
-import { withTransaction } from '../../utils/dbUtils.js';
+import { withTransaction, withRetry } from '../../utils/dbUtils.js';
 
 // Sprint 05 fault-injection hook (tests only; unset in production)
 const faultInject = (point) => {
@@ -55,7 +55,7 @@ export const PaymentService = {
     async recordCustomerPayment(invoice, amount, method, note, userId) {
         await dbConnect();
         // T-BIZ-01: all-or-nothing across invoice/debt/customer/treasury/cashbox
-        return withTransaction(async (session) => {
+        return withRetry(() => withTransaction(async (session) => {
             await invoice.recordPayment(amount, method, note, userId, session);
 
             faultInject('recordCustomerPayment:afterInvoice');
@@ -82,7 +82,7 @@ export const PaymentService = {
 
             const tx = await TreasuryService.recordPaymentCollection(invoice, amount, userId, method, note, meta, session);
             return { invoice, transaction: tx };
-        });
+        }));
     },
 
     /**
@@ -91,7 +91,7 @@ export const PaymentService = {
     async recordTotalCustomerPayment(customerId, amount, method, note, userId) {
         await dbConnect();
         // T-BIZ-01: unified collection — debt loop + credit + treasury in one txn
-        return withTransaction(async (session) => {
+        return withRetry(() => withTransaction(async (session) => {
             const customer = await Customer.findById(customerId).session(session);
             if (!customer) throw new NotFoundError('العميل غير موجود');
 
@@ -170,7 +170,7 @@ export const PaymentService = {
             );
 
             return { success: true, transaction: tx, appliedPayments };
-        });
+        }));
     },
 
     /**
@@ -179,7 +179,7 @@ export const PaymentService = {
     async recordSupplierPayment(po, amount, method, note, userId) {
         await dbConnect();
         // T-BIZ-01: PO + debt/supplier + treasury in one txn
-        return withTransaction(async (session) => {
+        return withRetry(() => withTransaction(async (session) => {
             // Atomic capped increment on the PO (T-DB-06 primitive)
             const updatedPo = await po.constructor.findOneAndUpdate(
                 { _id: po._id },
@@ -233,7 +233,7 @@ export const PaymentService = {
             );
 
             return updatedPo;
-        });
+        }));
     },
 
     /**
@@ -242,7 +242,7 @@ export const PaymentService = {
     async recordManualDebtPayment(debt, amount, method, note, userId) {
         await dbConnect();
         // T-BIZ-01: manual debt payment all-or-nothing
-        return withTransaction(async (session) => {
+        return withRetry(() => withTransaction(async (session) => {
             if (debt.debtorType === 'Customer') {
                 await this.updateSchedulesAfterPayment(debt.debtorId, 'Customer', amount, session);
             } else if (debt.debtorType === 'Supplier') {
@@ -277,7 +277,7 @@ export const PaymentService = {
             );
 
             return { debt, transaction: tx };
-        });
+        }));
     },
 
     /**
