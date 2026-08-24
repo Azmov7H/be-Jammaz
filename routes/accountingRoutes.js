@@ -23,8 +23,8 @@ router.get('/trial-balance', routeHandler(async (req) => {
 
 // Get Entries
 router.get('/entries', routeHandler(async (req) => {
-    const { startDate, endDate, type, account, limit } = req.query;
-    return await AccountingService.getEntries({ startDate, endDate, type, account, limit });
+    const { startDate, endDate, type, account, page, limit } = req.query;
+    return await AccountingService.getEntries({ startDate, endDate, type, account, page, limit });
 }));
 
 // Manual Entry (Expense)

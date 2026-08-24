@@ -12,8 +12,8 @@ const router = express.Router();
 router.use(authMiddleware);
 
 // Reads: owner | manager
-router.get('/', roleMiddleware(['owner', 'manager']), routeHandler(async () => {
-    return await UserService.getAll();
+router.get('/', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
+    return await UserService.getAll(req.query);
 }));
 
 router.get('/:id', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {

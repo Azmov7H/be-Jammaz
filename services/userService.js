@@ -1,4 +1,5 @@
 import User from '../models/User.js';
+import { parsePagination } from '../lib/paginate.js';
 import dbConnect from '../lib/db.js';
 import bcrypt from 'bcryptjs';
 import { NotFoundError, ConflictError, ForbiddenError } from '../lib/errors.js';
@@ -16,10 +17,18 @@ function pickAllowed(data) {
 }
 
 export const UserService = {
-    async getAll() {
+    async getAll(query = {}) {
         await dbConnect();
-        const users = await User.find({}, '-password -tokenVersion').sort({ createdAt: -1 });
-        return { users };
+        const { page, limit, skip } = parsePagination(query);
+        const [users, total] = await Promise.all([
+            User.find({}, '-password -tokenVersion')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            User.countDocuments({})
+        ]);
+        return { users, total, page, limit };
     },
 
     async getById(id) {

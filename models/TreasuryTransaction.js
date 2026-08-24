@@ -10,6 +10,8 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     receiptNumber: {
         type: String,
         unique: true, // T-DB-03 (pre-flight dupe check + dedupe script required before rollout)
+        sparse: true, // T-PERF-03 fix: expense/manual rows carry no receiptNumber —
+                      // non-sparse unique made the SECOND such insert a 11000 conflict
         index: true
     },
     amount: {

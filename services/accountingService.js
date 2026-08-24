@@ -1,4 +1,5 @@
 import AccountingEntry from '../models/AccountingEntry.js';
+import { parsePagination, MAX_LIMIT, boundedRange } from '../lib/paginate.js';
 import User from '../models/User.js';
 import dbConnect from '../lib/db.js';
 
@@ -329,26 +330,36 @@ export const AccountingService = {
     async getLedger(accountName, startDate = null, endDate = null) {
         await dbConnect();
 
-        const query = {
+        // T-PERF-01: bounded window (default 90d, max 365d). Naive skip would
+        // corrupt the running balance, so the balance is seeded from an
+        // opening aggregate over everything before the window.
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 90, maxDays: 365 });
+
+        const accountMatch = {
             $or: [
                 { debitAccount: accountName },
                 { creditAccount: accountName }
             ]
         };
 
-        if (startDate || endDate) {
-            query.date = {};
-            if (startDate) query.date.$gte = new Date(startDate);
-            if (endDate) query.date.$lte = new Date(endDate);
-        }
+        const openingAgg = await AccountingEntry.aggregate([
+            { $match: { ...accountMatch, date: { $lt: range.startDate } } },
+            { $group: {
+                _id: null,
+                total: { $sum: { $cond: [{ $eq: ['$debitAccount', accountName] }, '$amount', { $multiply: [-1, '$amount'] }] } }
+            } }
+        ]);
+
+        const query = { ...accountMatch, date: { $gte: range.startDate, $lte: range.endDate } };
 
         const entries = await AccountingEntry.find(query)
             .sort({ date: 1, createdAt: 1 })
+            .limit(1000) // hard safety net; window is already capped at 1y
             .populate('createdBy', 'name')
             .lean();
 
-        // Calculate running balance
-        let balance = 0;
+        // Calculate running balance (seeded with opening balance)
+        let balance = openingAgg[0]?.total || 0;
         const ledgerEntries = entries.map(entry => {
             const isDebit = entry.debitAccount === accountName;
             const amount = isDebit ? entry.amount : -entry.amount;
@@ -432,8 +443,11 @@ export const AccountingService = {
     /**
      * Get all entries with filters
      */
-    async getEntries({ startDate, endDate, type, account, limit = 100 } = {}) {
+    async getEntries({ startDate, endDate, type, account, page = 1, limit = 100 } = {}) {
         await dbConnect();
+
+        // T-PERF-01: bounded pagination (skip was previously unsupported)
+        const { skip, limit: cappedLimit } = parsePagination({ page, limit: Math.min(limit, MAX_LIMIT) });
 
         const query = {};
 
@@ -454,11 +468,16 @@ export const AccountingService = {
             ];
         }
 
-        return await AccountingEntry.find(query)
-            .sort({ date: -1, createdAt: -1 })
-            .limit(limit)
-            .populate('createdBy', 'name')
-            .lean();
+        const [entries, total] = await Promise.all([
+            AccountingEntry.find(query)
+                .sort({ date: -1, createdAt: -1 })
+                .skip(skip)
+                .limit(cappedLimit)
+                .populate('createdBy', 'name')
+                .lean(),
+            AccountingEntry.countDocuments(query)
+        ]);
+        return { entries, total, page: Math.max(1, parseInt(page, 10) || 1), limit: cappedLimit };
     },
 
     /**

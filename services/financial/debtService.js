@@ -1,4 +1,5 @@
 import { DebtRepository } from '../../repositories/debtRepository.js';
+import { literalContains } from '../../lib/safeRegex.js';
 import Debt from '../../models/Debt.js';
 import '../../models/Customer.js';
 import '../../models/Supplier.js';
@@ -499,7 +500,7 @@ export class DebtService {
             // Search logic
             ...(filter.search ? [{
                 $match: {
-                    'debtorDetails.name': { $regex: filter.search, $options: 'i' }
+                    'debtorDetails.name': literalContains(filter.search)
                 }
             }] : []),
             {

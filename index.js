@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { logger } from './lib/logger.js';
 import dbConnect from './lib/db.js';
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
@@ -126,7 +127,12 @@ if (process.env.NODE_ENV !== 'test') {
 
 const PORT = process.env.PORT || 5000;
 
-app.use(express.json());
+// T-PERF-05: explicit limit — 1mb accommodates multi-line invoices;
+// do not raise without measuring payload sizes.
+app.use(express.json({ limit: '1mb' }));
+// T-PERF-04: gzip responses (default level). No SSE/streaming endpoints exist
+// (verified Sprint 07) — safe to compress everything.
+app.use(compression());
 app.use(cookieParser());
 app.use(morgan('dev'));
 

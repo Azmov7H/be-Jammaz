@@ -7,62 +7,83 @@ import Supplier from '../models/Supplier.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
 import { TreasuryService } from '../services/treasuryService.js';
+import { createTTLCache } from '../lib/ttlCache.js';
 import { startOfDay, startOfMonth, startOfWeek, endOfDay, subMonths } from 'date-fns';
 
+// T-PERF-02: short-TTL dashboard cache keyed per role scope.
+// Invalidation = TTL expiry only (no event invalidation needed at this
+// horizon). Set DASHBOARD_CACHE_TTL=0 to disable.
+const DASHBOARD_CACHE_TTL_S = parseInt(process.env.DASHBOARD_CACHE_TTL ?? '30', 10);
+const kpiCache = createTTLCache(Math.max(0, DASHBOARD_CACHE_TTL_S) * 1000);
+const statsCache = createTTLCache(Math.max(0, DASHBOARD_CACHE_TTL_S) * 1000);
+
+// Role scope buckets — cache keys never cross these lines even though the
+// payloads currently coincide; future role-scoped filtering stays safe.
+function roleScope(role) {
+    return ['owner', 'manager'].includes(role) ? 'privileged' : 'staff';
+}
+
 export const DashboardService = {
-    async getKPIs() {
+    async getKPIs(role = 'viewer') {
+        const cacheKey = `kpis:${roleScope(role)}`;
+        if (DASHBOARD_CACHE_TTL_S > 0) {
+            const hit = kpiCache.get(cacheKey);
+            if (hit) return hit;
+        }
+        const result = await this._computeKPIs();
+        if (DASHBOARD_CACHE_TTL_S > 0) kpiCache.set(cacheKey, result);
+        return result;
+    },
+
+    async _computeKPIs() {
         await dbConnect();
         const now = new Date();
         const todayStart = startOfDay(now);
         const todayEnd = endOfDay(now);
         const monthStart = startOfMonth(now);
 
-        // Optimized Aggregation Pipelines
+        // T-PERF-02: today+month merged into single faceted scans (was 4).
         const [
-            todayStats,
-            monthStats,
-            todayExpenses,
-            monthExpenses,
+            invoiceWindows,
+            expenseWindows,
             financials,
             inventoryStats,
             pendingPOsCount,
             recentActivity
         ] = await Promise.all([
-            // Today Sales & Profit
-            Invoice.aggregate([
-                { $match: { date: { $gte: todayStart, $lte: todayEnd } } },
-                {
-                    $group: {
-                        _id: null,
-                        sales: { $sum: "$total" },
-                        profit: { $sum: { $subtract: ["$total", "$totalCost"] } }, // Assuming totalCost is reliable
-                        grossProfit: { $sum: "$profit" }, // If profit field exists
-                        count: { $sum: 1 }
-                    }
-                }
-            ]),
-            // Month Sales & Profit
             Invoice.aggregate([
                 { $match: { date: { $gte: monthStart } } },
-                {
-                    $group: {
-                        _id: null,
-                        sales: { $sum: "$total" },
-                        grossProfit: { $sum: "$profit" },
-                        count: { $sum: 1 }
-                    }
-                }
-            ]),
-            // Today Operating Expenses (Manual Only)
-            TreasuryTransaction.aggregate([
-                { $match: { type: 'EXPENSE', referenceType: 'Manual', date: { $gte: todayStart, $lte: todayEnd } } },
-                { $group: { _id: null, total: { $sum: "$amount" } } }
-            ]),
-            // Month Operating Expenses (Manual Only)
+                { $facet: {
+                    today: [
+                        { $match: { date: { $gte: todayStart, $lte: todayEnd } } },
+                        { $group: {
+                            _id: null,
+                            sales: { $sum: "$total" },
+                            profit: { $sum: { $subtract: ["$total", "$totalCost"] } }, // Assuming totalCost is reliable
+                            grossProfit: { $sum: "$profit" }, // If profit field exists
+                            count: { $sum: 1 }
+                        } }
+                    ],
+                    month: [
+                        { $group: {
+                            _id: null,
+                            sales: { $sum: "$total" },
+                            grossProfit: { $sum: "$profit" },
+                            count: { $sum: 1 }
+                        } }
+                    ]
+                } }]),
             TreasuryTransaction.aggregate([
                 { $match: { type: 'EXPENSE', referenceType: 'Manual', date: { $gte: monthStart } } },
-                { $group: { _id: null, total: { $sum: "$amount" } } }
-            ]),
+                { $facet: {
+                    today: [
+                        { $match: { date: { $gte: todayStart, $lte: todayEnd } } },
+                        { $group: { _id: null, total: { $sum: "$amount" } } }
+                    ],
+                    month: [
+                        { $group: { _id: null, total: { $sum: "$amount" } } }
+                    ]
+                } }]),
             // Financials (Receivables & Payables & Cash)
             Promise.all([
                 Customer.aggregate([{ $match: { balance: { $ne: 0 } } }, { $group: { _id: null, total: { $sum: "$balance" } } }]),
@@ -88,10 +109,10 @@ export const DashboardService = {
             Invoice.find().sort({ date: -1 }).limit(5).lean().select('number total date customerName')
         ]);
 
-        const tStats = todayStats[0] || { sales: 0, profit: 0, grossProfit: 0, count: 0 };
-        const mStats = monthStats[0] || { sales: 0, grossProfit: 0, count: 0 };
-        const tExp = todayExpenses[0]?.total || 0;
-        const mExp = monthExpenses[0]?.total || 0;
+        const tStats = invoiceWindows[0]?.today?.[0] || { sales: 0, profit: 0, grossProfit: 0, count: 0 };
+        const mStats = invoiceWindows[0]?.month?.[0] || { sales: 0, grossProfit: 0, count: 0 };
+        const tExp = expenseWindows[0]?.today?.[0]?.total || 0;
+        const mExp = expenseWindows[0]?.month?.[0]?.total || 0;
         const invStats = inventoryStats[0] || { totalStockValue: 0, lowStockCount: 0, outOfStockCount: 0 };
 
         const [receivablesRes, payablesRes, cashBalance] = financials;
@@ -191,14 +212,16 @@ export const DashboardService = {
         // rely on a pre-calculated collection.
         // For now, let's just get top 2 selling products and suggest them.
 
-        const topSelling = await StockMovement.aggregate([
+        // T-PERF-02: one scan serves both bundle + ABC suggestions (was 2)
+        const fastMovers = await StockMovement.aggregate([
             { $match: { type: 'SALE' } },
             { $group: { _id: "$productId", totalQty: { $sum: "$quantity" } } },
             { $sort: { totalQty: -1 } },
-            { $limit: 2 },
+            { $limit: 5 },
             { $lookup: { from: "products", localField: "_id", foreignField: "_id", as: "product" } },
             { $unwind: "$product" }
         ]);
+        const topSelling = fastMovers.slice(0, 2);
 
         const bundleSuggestions = [];
         if (topSelling.length >= 2) {
@@ -215,15 +238,6 @@ export const DashboardService = {
         // 2. ABC Analysis (Optimized)
         // Instead of fetching all products + all invoices, let's just use the 'sales' field if we had it.
         // Since we don't track total sales in Product, we rely on StockMovement for velocity.
-
-        const fastMovers = await StockMovement.aggregate([
-            { $match: { type: 'SALE' } },
-            { $group: { _id: "$productId", totalQty: { $sum: "$quantity" } } },
-            { $sort: { totalQty: -1 } },
-            { $limit: 5 },
-            { $lookup: { from: "products", localField: "_id", foreignField: "_id", as: "product" } },
-            { $unwind: "$product" }
-        ]);
 
         const abcSuggestion = {
             title: 'تحليل ABC للمخزون (Top Sellers)',
@@ -246,18 +260,24 @@ export const DashboardService = {
         };
     },
 
-    async getUnifiedData() {
+    async getUnifiedData(role = 'viewer') {
+        const cacheKey = `unified:${roleScope(role)}`;
+        if (DASHBOARD_CACHE_TTL_S > 0) {
+            const hit = kpiCache.get(cacheKey);
+            if (hit) return hit;
+        }
         const [kpiData, statsData, strategyData] = await Promise.all([
-            this.getKPIs(),
+            this.getKPIs(role),
             this.getStats(),
             this.getStrategy()
         ]);
-
-        return {
+        const unified = {
             ...kpiData,
             ...statsData,
             strategy: strategyData
         };
+        if (DASHBOARD_CACHE_TTL_S > 0) kpiCache.set(cacheKey, unified);
+        return unified;
     }
 };
 

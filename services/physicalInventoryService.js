@@ -1,4 +1,5 @@
 import PhysicalInventory from '../models/PhysicalInventory.js';
+import { parsePagination } from '../lib/paginate.js';
 import { withTransaction } from '../utils/dbUtils.js';
 import Product from '../models/Product.js';
 import { StockService } from './stockService.js';
@@ -235,8 +236,11 @@ export const PhysicalInventoryService = {
     /**
      * Get all physical counts with filters
      */
-    async getCounts({ location, status, startDate, endDate } = {}) {
+    async getCounts({ location, status, startDate, endDate, page, limit } = {}) {
         await dbConnect();
+
+        // T-PERF-01: bounded pagination
+        const { skip, limit: cappedLimit } = parsePagination({ page, limit });
 
         const query = {};
 
@@ -249,11 +253,17 @@ export const PhysicalInventoryService = {
             if (endDate) query.date.$lte = new Date(endDate);
         }
 
-        return await PhysicalInventory.find(query)
-            .sort({ date: -1 })
-            .populate('createdBy', 'name')
-            .populate('approvedBy', 'name')
-            .lean();
+        const [counts, total] = await Promise.all([
+            PhysicalInventory.find(query)
+                .sort({ date: -1 })
+                .skip(skip)
+                .limit(cappedLimit)
+                .populate('createdBy', 'name')
+                .populate('approvedBy', 'name')
+                .lean(),
+            PhysicalInventory.countDocuments(query)
+        ]);
+        return { counts, total, page: Math.max(1, parseInt(page, 10) || 1), limit: cappedLimit };
     },
 
     /**
