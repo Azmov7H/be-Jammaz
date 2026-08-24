@@ -1,4 +1,5 @@
 import Customer from '../models/Customer.js';
+import { literalContains } from '../lib/safeRegex.js';
 import { boundedRange } from '../lib/paginate.js';
 import { withTransaction } from '../utils/dbUtils.js';
 import { CACHE_TAGS } from '../lib/cache.js';
@@ -12,8 +13,8 @@ export const CustomerService = {
         const query = {};
         if (search) {
             query.$or = [
-                { name: { $regex: search, $options: 'i' } },
-                { phone: { $regex: search, $options: 'i' } }
+                { name: literalContains(search) },
+                { phone: literalContains(search) }
             ];
         }
 

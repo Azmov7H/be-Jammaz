@@ -126,7 +126,9 @@ if (process.env.NODE_ENV !== 'test') {
 
 const PORT = process.env.PORT || 5000;
 
-app.use(express.json());
+// T-PERF-05: explicit limit — 1mb accommodates multi-line invoices;
+// do not raise without measuring payload sizes.
+app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 app.use(morgan('dev'));
 

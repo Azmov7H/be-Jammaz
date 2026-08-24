@@ -1,4 +1,5 @@
 import { ProductRepository } from '../repositories/productRepository.js';
+import { literalContains } from '../lib/safeRegex.js';
 import Product from '../models/Product.js'; // Import Model for write operations until Repository is fully enhanced
 import { StockService } from '../services/stockService.js';
 import dbConnect from '../lib/db.js';
@@ -11,8 +12,8 @@ export const ProductService = {
         const query = { isActive: true };
         if (search) {
             query.$or = [
-                { name: { $regex: search, $options: 'i' } },
-                { code: { $regex: search, $options: 'i' } }
+                { name: literalContains(search) },
+                { code: literalContains(search) }
             ];
         }
         if (category && category !== 'all') query.category = category;

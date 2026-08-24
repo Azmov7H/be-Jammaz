@@ -36,3 +36,31 @@
 3. product.shopQty+warehouseQty == opening + Σ movements.
 4. invoice.paidAmount == Σ invoice.payments.amount − refunds applied.
 5. Every completed financial flow leaves ≥0 accounting-entry mirror or documented exception.
+
+## Addendum: Query Performance Evidence (Sprint 07 / T-PERF-05)
+
+Reproduce with `node scripts/perf/explain-evidence.js` against any environment
+(read-only). Snapshot below taken on an empty dev database — index *selection*
+is meaningful, doc counts are not. Re-run against a production-sized snapshot
+before/after any index change.
+
+| query | winning stage | index used |
+| ----- | ------------- | ---------- |
+| dashboard: recent invoices (`status != CANCELLED`, sort date -1) | FETCH | `date_-1` |
+| list: product search (literal `$regex` on name/code) | SUBPLAN | per-$or-branch plan; prefix-anchored candidates benefit from `name_1`/`code_1` |
+| list: customer search (literal regex name/phone) | SUBPLAN | same pattern |
+| list: invoice by number (literal regex) | FETCH | `number_1` |
+| treasury transactions window (30d) + sort | FETCH | `date_-1` |
+| stock movements window + sort | SORT (in-mem after fetch) | — add `{date:-1}` compound if p95 regresses |
+| daily-sales summary window | FETCH | `date_1` |
+| accounting entries window + sort | SORT over IXSCAN | `date_1` |
+
+Notes:
+- All user-supplied search strings are escaped via `lib/safeRegex.js`
+  (`literalContains`) — no metacharacter injection or catastrophic scans.
+- Every list endpoint is bounded by `lib/paginate.js` (T-PERF-01): limit ≤ 100,
+  windows ≤ 90d default unless documented (ledger/statement 365d,
+  daily-sales 180d).
+- `express.json({ limit: '1mb' })` decision: raised from the 100kb default to
+  fit multi-line invoices with populated item arrays; do not raise further
+  without measuring real payload sizes.

@@ -1,4 +1,5 @@
 import { InvoiceRepository } from '../repositories/invoiceRepository.js';
+import { literalContains } from '../lib/safeRegex.js';
 import { ProductRepository } from '../repositories/productRepository.js';
 import { CustomerRepository } from '../repositories/customerRepository.js';
 import Product from '../models/Product.js';
@@ -20,8 +21,8 @@ export const InvoiceService = {
         const query = {};
         if (search) {
             query.$or = [
-                { number: { $regex: search, $options: 'i' } },
-                { customerName: { $regex: search, $options: 'i' } }
+                { number: literalContains(search) },
+                { customerName: literalContains(search) }
             ];
         }
         if (customerId) query.customer = customerId;

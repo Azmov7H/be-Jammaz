@@ -1,4 +1,5 @@
 import Product from '../models/Product.js';
+import { literalContains } from '../lib/safeRegex.js';
 import { boundedRange, MAX_LIMIT } from '../lib/paginate.js';
 import StockMovement from '../models/StockMovement.js';
 import Invoice from '../models/Invoice.js';
@@ -354,8 +355,8 @@ export const StockService = {
 
         if (search) {
             filter.$or = [
-                { name: { $regex: search, $options: 'i' } },
-                { code: { $regex: search, $options: 'i' } }
+                { name: literalContains(search) },
+                { code: literalContains(search) }
             ];
         }
 

@@ -1,4 +1,5 @@
 import Supplier from '../models/Supplier.js';
+import { literalContains } from '../lib/safeRegex.js';
 import { withTransaction } from '../utils/dbUtils.js';
 import dbConnect from '../lib/db.js';
 import { NotFoundError, ConflictError } from '../lib/errors.js';
@@ -10,9 +11,9 @@ export const SupplierService = {
         const query = {};
         if (search) {
             query.$or = [
-                { name: { $regex: search, $options: 'i' } },
-                { contactName: { $regex: search, $options: 'i' } },
-                { phone: { $regex: search, $options: 'i' } }
+                { name: literalContains(search) },
+                { contactName: literalContains(search) },
+                { phone: literalContains(search) }
             ];
         }
 
