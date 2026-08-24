@@ -41,7 +41,8 @@ export const userSchema = z.object({
     email: z.string().email('البريد الإلكتروني غير صالح'),
     password: z.string().min(8, 'كلمة المرور يجب أن تكون 8 أحرف على الأقل').max(128),
     role: z.enum(['owner', 'manager', 'cashier', 'warehouse', 'viewer'], {
-        errorMap: () => ({ message: 'الدور الوظيفي غير صالح' })
+        // zod v4: errorMap param was replaced by `error` (old form was silently ignored)
+        error: () => ({ message: 'الدور الوظيفي غير صالح' })
     }),
     picture: z.string().max(500).optional(),
     isActive: z.boolean().optional(),
