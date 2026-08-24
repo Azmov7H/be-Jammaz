@@ -1,4 +1,5 @@
 import Product from '../models/Product.js';
+import { boundedRange, MAX_LIMIT } from '../lib/paginate.js';
 import StockMovement from '../models/StockMovement.js';
 import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
@@ -381,10 +382,12 @@ export const StockService = {
     },
 
     async getMovements(startDate, endDate, type = null) {
+        // T-PERF-01: bounded window (default 30d as before, max 90d)
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 90 });
         const query = {
             date: {
-                $gte: startDate,
-                $lte: endDate
+                $gte: range.startDate,
+                $lte: range.endDate
             }
         };
 
@@ -394,6 +397,7 @@ export const StockService = {
 
         return await StockMovement.find(query)
             .sort({ date: -1 })
+            .limit(MAX_LIMIT * 5) // hard safety net
             .populate('productId', 'name code')
             .populate('createdBy', 'name')
             .lean();

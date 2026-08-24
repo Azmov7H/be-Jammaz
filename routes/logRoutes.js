@@ -9,21 +9,15 @@ router.use(authMiddleware);
 router.use(roleMiddleware(['owner', 'manager']));
 
 router.get('/', routeHandler(async (req) => {
-    const { limit, page } = req.query;
-    return await LogService.getAll({
-        limit: parseInt(limit) || 100,
-        page: parseInt(page) || 1
-    });
+    return await LogService.getAll(req.query);
 }));
 
 router.get('/recent', routeHandler(async (req) => {
-    const { limit } = req.query;
-    return await LogService.getRecentLogs(parseInt(limit) || 50);
+    return await LogService.getRecentLogs(req.query);
 }));
 
 router.get('/:entity/:id', routeHandler(async (req) => {
-    const { entity, id } = req.params;
-    return await LogService.getEntityLogs(entity, id);
+    return await LogService.getEntityLogs(req.params.entity, req.params.id, req.query);
 }));
 
 export default router;

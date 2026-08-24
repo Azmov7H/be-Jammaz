@@ -1,4 +1,5 @@
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
+import { boundedRange, parsePagination, MAX_LIMIT } from '../lib/paginate.js';
 import CashboxDaily from '../models/CashboxDaily.js';
 import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
@@ -476,14 +477,12 @@ export const TreasuryService = {
     /**
      * Get all transactions for date range
      */
-    async getTransactions(startDate, endDate, type = null, partnerId = null) {
+    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100 } = {}) {
         const query = {};
 
-        if (startDate || endDate) {
-            query.date = {};
-            if (startDate) query.date.$gte = new Date(startDate);
-            if (endDate) query.date.$lte = new Date(endDate);
-        }
+        // T-PERF-01: default 30d window, hard-capped at 90d
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 90 });
+        query.date = { $gte: range.startDate, $lte: range.endDate };
 
         if (type && type !== 'ALL') {
             query.type = type;
@@ -493,8 +492,14 @@ export const TreasuryService = {
             query.partnerId = partnerId;
         }
 
+        // T-PERF-01: bounded page size (default 100, max MAX_LIMIT)
+        const { skip } = parsePagination({ page });
+        const cappedLimit = Math.min(Math.max(1, parseInt(limit, 10) || 100), MAX_LIMIT);
+
         return await TreasuryTransaction.find(query)
             .sort({ date: -1 })
+            .skip(skip)
+            .limit(cappedLimit)
             .populate('createdBy', 'name')
             .populate({
                 path: 'referenceId',
@@ -519,14 +524,17 @@ export const TreasuryService = {
         periodEnd.setHours(23, 59, 59, 999);
         periodStart.setHours(0, 0, 0, 0);
 
-        const transactions = await this.getTransactions(periodStart, periodEnd);
-
-        // 1. Calculate totals for this period
-        const totals = transactions.reduce((acc, tx) => {
-            if (tx.type === 'INCOME') acc.income += tx.amount;
-            if (tx.type === 'EXPENSE') acc.expense += tx.amount;
-            return acc;
-        }, { income: 0, expense: 0 });
+        // T-PERF-01: aggregate in DB — getTransactions is now page-capped,
+        // so summaries must never depend on it.
+        const totalsAgg = await TreasuryTransaction.aggregate([
+            { $match: { date: { $gte: periodStart, $lte: periodEnd } } },
+            { $group: { _id: '$type', total: { $sum: '$amount' } } }
+        ]);
+        const totals = { income: 0, expense: 0 };
+        for (const row of totalsAgg) {
+            if (row._id === 'INCOME') totals.income = row.total;
+            if (row._id === 'EXPENSE') totals.expense = row.total;
+        }
 
         // 2. Calculate Profit from Invoices in this period (Sales only)
         const profitAgg = await Invoice.aggregate([

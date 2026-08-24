@@ -1,4 +1,5 @@
 import Customer from '../models/Customer.js';
+import { boundedRange } from '../lib/paginate.js';
 import { withTransaction } from '../utils/dbUtils.js';
 import { CACHE_TAGS } from '../lib/cache.js';
 import dbConnect from '../lib/db.js';
@@ -158,13 +159,9 @@ export const CustomerService = {
         const Invoice = (await import('../models/Invoice.js')).default;
         const TreasuryTransaction = (await import('../models/TreasuryTransaction.js')).default;
 
-        // Date Filter
-        const dateQuery = {};
-        if (startDate || endDate) {
-            dateQuery.date = {};
-            if (startDate) dateQuery.date.$gte = new Date(startDate);
-            if (endDate) dateQuery.date.$lte = new Date(endDate);
-        }
+        // T-PERF-01: statement window hard-capped at 1 year
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 365 });
+        const dateQuery = { date: { $gte: range.startDate, $lte: range.endDate } };
 
         // 1. Get Invoices (Debits)
         const invoices = await Invoice.find({

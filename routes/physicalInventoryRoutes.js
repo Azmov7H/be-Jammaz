@@ -13,12 +13,14 @@ router.use(authMiddleware);
 
 // Get all physical inventory counts
 router.get('/', routeHandler(async (req) => {
-    const { location, status, startDate, endDate } = req.query;
+    const { location, status, startDate, endDate, page, limit } = req.query;
     return await PhysicalInventoryService.getCounts({
         location,
         status,
         startDate: startDate ? new Date(startDate) : undefined,
-        endDate: endDate ? new Date(endDate) : undefined
+        endDate: endDate ? new Date(endDate) : undefined,
+        page,
+        limit
     });
 }));
 

@@ -1,4 +1,5 @@
 import Log from '../models/Log.js';
+import { parsePagination } from '../lib/paginate.js';
 import dbConnect from '../lib/db.js';
 
 /**
@@ -40,9 +41,9 @@ export const LogService = {
      * @param {number} query.limit - Number of logs per page
      * @param {number} query.page - Page number
      */
-    async getAll({ limit = 100, page = 1 } = {}) {
+    async getAll(query = {}) {
         await dbConnect();
-        const skip = (page - 1) * limit;
+        const { page, limit, skip } = parsePagination(query);
 
         return await Log.find({})
             .populate('userId', 'name')
@@ -55,19 +56,23 @@ export const LogService = {
     /**
      * Get logs for an entity
      */
-    async getEntityLogs(entity, entityId) {
+    async getEntityLogs(entity, entityId, query = {}) {
+        const { limit, skip } = parsePagination(query);
         await dbConnect();
         return await Log.find({ entity, entityId })
             .populate('userId', 'name')
             .sort({ date: -1 })
+            .skip(skip)
+            .limit(limit)
             .lean();
     },
 
     /**
      * Get recent logs (system wide)
      */
-    async getRecentLogs(limit = 50) {
+    async getRecentLogs(query = {}) {
         await dbConnect();
+        const { limit } = parsePagination(query);
         return await Log.find({})
             .populate('userId', 'name')
             .sort({ date: -1 })

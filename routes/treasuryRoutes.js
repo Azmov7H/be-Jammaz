@@ -34,12 +34,8 @@ router.post('/reconcile', roleMiddleware(['owner', 'manager']), validate(reconci
 
 // Get transactions history
 router.get('/transactions', routeHandler(async (req) => {
-    const { startDate, endDate, type } = req.query;
-    return await TreasuryService.getTransactions(
-        startDate ? new Date(startDate) : new Date(new Date().setDate(new Date().getDate() - 30)),
-        endDate ? new Date(endDate) : new Date(),
-        type
-    );
+    const { startDate, endDate, type, page, limit } = req.query;
+    return await TreasuryService.getTransactions(startDate, endDate, type, null, { page, limit });
 }));
 
 // Add manual income

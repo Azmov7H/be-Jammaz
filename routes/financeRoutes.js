@@ -141,8 +141,8 @@ router.get('/daily', routeHandler(async (req) => {
 // NEW: Get transactions for a specific partner (Customer/Supplier)
 router.get('/partner/:id/transactions', routeHandler(async (req) => {
     const { id } = req.params;
-    const { startDate, endDate, type } = req.query;
-    return await TreasuryService.getTransactions(startDate, endDate, type, id);
+    const { startDate, endDate, type, page, limit } = req.query;
+    return await TreasuryService.getTransactions(startDate, endDate, type, id, { page, limit });
 }));
 
 export default router;
