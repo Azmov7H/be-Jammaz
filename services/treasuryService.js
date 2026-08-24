@@ -734,14 +734,25 @@ export const TreasuryService = {
      */
     async deleteTransactionByRef(refType, refId, session = null) {
         const transactions = await TreasuryTransaction.find({ referenceType: refType, referenceId: refId }).session(session);
+        if (transactions.length === 0) return;
 
-        for (const transaction of transactions) {
-            // Revert Cashbox impact
-            const startOfDay = new Date(transaction.date);
+        // T-PERF-04: single pass — group by day so each affected CashboxDaily
+        // is read/written once, then one deleteMany + one balance delta.
+        const byDay = new Map();
+        for (const tx of transactions) {
+            const startOfDay = new Date(tx.date);
             startOfDay.setHours(0, 0, 0, 0);
+            if (!byDay.has(startOfDay.getTime())) {
+                byDay.set(startOfDay.getTime(), { date: startOfDay, txs: [] });
+            }
+            byDay.get(startOfDay.getTime()).txs.push(tx);
+        }
 
-            const cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
-            if (cashbox) {
+        for (const { date, txs } of byDay.values()) {
+            const cashbox = await CashboxDaily.findOne({ date }).session(session);
+            if (!cashbox) continue;
+
+            for (const transaction of txs) {
                 if (transaction.type === 'INCOME') {
                     // Check manual first
                     const mIdx = cashbox.manualIncome.findIndex(x => x.amount === transaction.amount && x.reason === transaction.description);
@@ -766,12 +777,19 @@ export const TreasuryService = {
                         : (transaction.method === 'bank' ? 'bankExpenses' : transaction.method === 'wallet' ? 'walletExpenses' : 'checkExpenses');
                     cashbox[methodField] -= transaction.amount;
                 }
-
-                await cashbox.save({ session });
             }
 
-            await this._deleteTransaction(transaction, session);
+            await cashbox.save({ session });
         }
+
+        await TreasuryTransaction.deleteMany(
+            { _id: { $in: transactions.map(t => t._id) } },
+            { session }
+        );
+        const netDelta = transactions.reduce(
+            (sum, t) => sum + (t.type === 'INCOME' ? -t.amount : t.amount), 0
+        );
+        await this._applyBalanceDelta(netDelta, session);
     },
 
     /**
