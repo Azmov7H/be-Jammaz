@@ -1,3 +1,4 @@
+import { logger } from '../lib/logger.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 
 /**
@@ -41,7 +42,7 @@ export const InvoiceSettingsService = {
     async updateInvoiceDesign(payload) {
         const rejected = Object.keys(payload || {}).filter(k => !ALLOWED_FIELDS.includes(k));
         if (rejected.length > 0) {
-            console.warn('[InvoiceSettings] ignored non-allowed fields:', rejected.join(', '));
+            logger.warn('[InvoiceSettings] ignored non-allowed fields:', rejected.join(', '));
         }
 
         const updates = {};

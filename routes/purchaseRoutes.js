@@ -38,7 +38,9 @@ router.patch('/:id', validateParams(idParams), roleMiddleware(['owner', 'manager
 }));
 
 router.post('/:id/receive', validateParams(idParams), roleMiddleware(['owner', 'manager']), validate(poReceiveSchema), routeHandler(async (req) => {
-    return await PurchaseOrderService.receive(req.params.id, req.body, req.user._id);
+    // FIX (Sprint 08): body was forwarded wholesale as paymentType and userId
+    // was dropped — every direct receive call died on an undefined-user cast.
+    return await PurchaseOrderService.receive(req.params.id, req.body?.paymentType, req.user._id);
 }));
 
 router.delete('/:id', validateParams(idParams), roleMiddleware(['owner']), routeHandler(async (req) => {

@@ -1,3 +1,4 @@
+import { logger } from '../lib/logger.js';
 import Log from '../models/Log.js';
 import { parsePagination } from '../lib/paginate.js';
 import dbConnect from '../lib/db.js';
@@ -31,7 +32,7 @@ export const LogService = {
             }], { session });
         } catch (error) {
             // Non-blocking error logging
-            console.error('Failed to create system log:', error);
+            logger.error('Failed to create system log:', error);
         }
     },
 

@@ -27,7 +27,7 @@ export const PaymentService = {
         const schedules = await PaymentSchedule.find({
             entityId,
             entityType,
-            status: { $in: ['PENDING', 'OVERDUE'] }
+            status: { $in: ['pending', 'overdue'] }
         }).sort({ dueDate: 1 }).session(session);
 
         let remaining = amount;
@@ -38,7 +38,7 @@ export const PaymentService = {
             if (remaining >= schedule.amount) {
                 remaining -= schedule.amount;
                 schedule.amount = 0;
-                schedule.status = 'PAID';
+                schedule.status = 'paid';
                 schedule.paidAt = new Date();
                 await schedule.save({ session });
             } else {
@@ -178,8 +178,16 @@ export const PaymentService = {
      */
     async recordSupplierPayment(po, amount, method, note, userId) {
         await dbConnect();
+
+        // FIX (Sprint 08): callers pass a bare PO id (frontend) or stub —
+        // resolve the real document first, otherwise _id reads undefined.
+        const PurchaseOrder = (await import('../../models/PurchaseOrder.js')).default;
+        const poDoc = await PurchaseOrder.findById(po?._id ?? po);
+        if (!poDoc) throw new NotFoundError('أمر الشراء غير موجود');
+
         // T-BIZ-01: PO + debt/supplier + treasury in one txn
         return withRetry(() => withTransaction(async (session) => {
+            const po = poDoc;
             // Atomic capped increment on the PO (T-DB-06 primitive)
             const updatedPo = await po.constructor.findOneAndUpdate(
                 { _id: po._id },
@@ -241,8 +249,18 @@ export const PaymentService = {
      */
     async recordManualDebtPayment(debt, amount, method, note, userId) {
         await dbConnect();
+
+        // FIX (Sprint 08): callers send either a bare id string or a {_id}
+        // stub (frontend) — the old code read debtorType/_id off the stub, so
+        // schedule sync + partner-balance meta silently never ran, and bare
+        // ids 404'd. Resolve the real doc first.
+        const Debt = (await import('../../models/Debt.js')).default;
+        const debtDoc = await Debt.findById(debt?._id ?? debt);
+        if (!debtDoc) throw new NotFoundError('الدين غير موجود');
+
         // T-BIZ-01: manual debt payment all-or-nothing
         return withRetry(() => withTransaction(async (session) => {
+            const debt = debtDoc;
             if (debt.debtorType === 'Customer') {
                 await this.updateSchedulesAfterPayment(debt.debtorId, 'Customer', amount, session);
             } else if (debt.debtorType === 'Supplier') {

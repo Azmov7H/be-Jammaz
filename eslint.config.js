@@ -7,14 +7,6 @@ export default [
     },
     js.configs.recommended,
     {
-        // T-SEC-05: scripts/tests use console directly (CLI output);
-        // lib/logger.js is the single sanctioned console boundary.
-        files: ['scripts/**/*.js', 'tests/**', 'lib/logger.js'],
-        rules: {
-            'no-console': 'off',
-        },
-    },
-    {
         languageOptions: {
             ecmaVersion: 2024,
             sourceType: 'module',
@@ -33,6 +25,17 @@ export default [
         },
         linterOptions: {
             reportUnusedDisableDirectives: true,
+        },
+    },
+    {
+        // T-SEC-05: scripts/tests use console directly (CLI output);
+        // lib/logger.js is the single sanctioned console boundary.
+        // NOTE: must come AFTER the global rules block — flat config merges
+        // per-rule with later entries winning, so an earlier override is
+        // silently discarded (this bug shipped with Sprint 06).
+        files: ['scripts/**/*.js', 'tests/**', 'lib/logger.js'],
+        rules: {
+            'no-console': 'off',
         },
     },
 ];

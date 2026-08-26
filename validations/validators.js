@@ -41,7 +41,8 @@ export const userSchema = z.object({
     email: z.string().email('البريد الإلكتروني غير صالح'),
     password: z.string().min(8, 'كلمة المرور يجب أن تكون 8 أحرف على الأقل').max(128),
     role: z.enum(['owner', 'manager', 'cashier', 'warehouse', 'viewer'], {
-        errorMap: () => ({ message: 'الدور الوظيفي غير صالح' })
+        // zod v4: errorMap param was replaced by `error` (old form was silently ignored)
+        error: () => ({ message: 'الدور الوظيفي غير صالح' })
     }),
     picture: z.string().max(500).optional(),
     isActive: z.boolean().optional(),
@@ -196,7 +197,10 @@ export const poStatusSchema = z.object({
 });
 
 export const poReceiveSchema = z.object({
-    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).default('cash'),
+    // FIX (Sprint 08): no .default('cash') here — a bare /receive call must
+    // fall back to the PO's own payment type (credit stays credit), not be
+    // silently paid in cash.
+    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).optional(),
     receivedItems: z.array(z.object({
         productId: idField,
         quantity: qty,

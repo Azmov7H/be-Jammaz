@@ -2,7 +2,6 @@ import Customer from '../models/Customer.js';
 import { literalContains } from '../lib/safeRegex.js';
 import { boundedRange } from '../lib/paginate.js';
 import { withTransaction } from '../utils/dbUtils.js';
-import { CACHE_TAGS } from '../lib/cache.js';
 import dbConnect from '../lib/db.js';
 import { NotFoundError, ConflictError } from '../lib/errors.js';
 

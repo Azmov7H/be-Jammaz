@@ -18,7 +18,21 @@ export async function createTestApp() {
 
     if (!mongod) {
         // Single-node replica set so transactions behave like production (Atlas).
-        mongod = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
+        // Retry boot: under parallel CI/load the mongod child can miss the
+        // default 10s startup window — transient infra noise, not a code bug.
+        let lastErr;
+        for (let attempt = 0; attempt < 3 && !mongod; attempt++) {
+            try {
+                mongod = await MongoMemoryReplSet.create({
+                    replSet: { count: 1, storageEngine: 'wiredTiger' },
+                    instanceOpts: [{ launchTimeout: 60000 }],
+                });
+            } catch (e) {
+                lastErr = e;
+                await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+            }
+        }
+        if (!mongod) throw lastErr;
         process.env.MONGODB_URI = mongod.getUri('transfer-erp-test');
         const { default: dbConnect } = await import('../lib/db.js');
         await dbConnect();

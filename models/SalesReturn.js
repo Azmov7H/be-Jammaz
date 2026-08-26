@@ -49,9 +49,7 @@ const SalesReturnSchema = new mongoose.Schema({ // T-DB-01 indexes at bottom
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
-if (mongoose.models.SalesReturn) {
-}
-export default mongoose.model('SalesReturn', SalesReturnSchema);
+export default mongoose.models.SalesReturn || mongoose.model('SalesReturn', SalesReturnSchema);
 
 // T-DB-01
 SalesReturnSchema.index({ originalInvoice: 1 });

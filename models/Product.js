@@ -73,9 +73,6 @@ ProductSchema.pre('save', function () {
     this.stockQty = (this.warehouseQty || 0) + (this.shopQty || 0);
 });
 
-if (mongoose.models.Product) {
-}
-
 export default mongoose.models.Product || mongoose.model('Product', ProductSchema);
 
 

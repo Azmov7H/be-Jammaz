@@ -121,14 +121,16 @@ export const TreasuryService = {
      * Record a transaction (collection/payment) for a generic debt (Manual/Opening Balance)
      */
     async recordDebtTransaction(debtId, partnerId, amount, type, userId, description, method = 'cash', meta = {}, session = null) {
-        let receiptNumber = null;
+        // CONCURRENCY FIX (Sprint 08): omit the key for EXPENSE rows instead of
+        // storing receiptNumber: null — the sparse unique index treats explicit
+        // null as a value, so the SECOND null-receipt insert died with E11000.
+        let receiptNumber;
         if (type === 'INCOME') {
             receiptNumber = await this.getNextReceiptNumber(session);
         }
 
-        const transaction = await this._createTransactions([{
+        const debtTxDoc = {
             type: type, // 'INCOME' or 'EXPENSE'
-            receiptNumber,
             amount: amount,
             description: description,
             referenceType: 'Debt',
@@ -138,7 +140,10 @@ export const TreasuryService = {
             method: method,
             createdBy: userId,
             meta: meta
-        }], session);
+        };
+        if (receiptNumber !== undefined) debtTxDoc.receiptNumber = receiptNumber;
+
+        const transaction = await this._createTransactions([debtTxDoc], session);
 
         // Update daily cashbox based on method
         let updateField;
@@ -162,6 +167,10 @@ export const TreasuryService = {
      */
     async recordPurchaseExpense(purchaseOrder, userId, session = null) {
         // Create treasury transaction
+        // FIX (Sprint 08): 'credit' is not a valid TreasuryTransaction method —
+        // coerce to cash (the movement itself only happens for non-credit POs).
+        const payMethod = ['bank', 'wallet', 'check'].includes(purchaseOrder.paymentType)
+            ? purchaseOrder.paymentType : 'cash';
         const typeLabel = purchaseOrder.paymentType === 'wallet' ? '(محفظة)' :
             purchaseOrder.paymentType === 'bank' ? '(بنك)' :
                 purchaseOrder.paymentType === 'check' ? '(شيك)' : '';
@@ -174,7 +183,7 @@ export const TreasuryService = {
             referenceId: purchaseOrder._id,
             partnerId: purchaseOrder.supplier,
             date: purchaseOrder.receivedDate || new Date(),
-            method: purchaseOrder.paymentType || 'cash',
+            method: payMethod,
             createdBy: userId
         }], session);
 
@@ -796,14 +805,20 @@ export const TreasuryService = {
      * Helper to get and increment the next receipt number
      */
     async getNextReceiptNumber(session = null) {
-        // We use a simple incrementing number stored in InvoiceSettings
+        // We use a simple incrementing number stored in InvoiceSettings.
+        //
+        // CONCURRENCY FIX (Sprint 08): the $inc deliberately runs OUTSIDE the
+        // caller's transaction (session ignored). Inside a txn, two parallel
+        // payments both read the same snapshot value, mint identical REC-n
+        // values, and one dies on the unique index with a NON-retryable
+        // E11000. Numbers may burn on abort — acceptable for receipts.
+        void session;
         const settings = await InvoiceSettings.findOneAndUpdate(
             { isActive: true },
             { $inc: { lastReceiptNumber: 1 } },
             {
                 new: true,
                 upsert: true,
-                session
             }
         );
 
