@@ -241,8 +241,18 @@ export const PaymentService = {
      */
     async recordManualDebtPayment(debt, amount, method, note, userId) {
         await dbConnect();
+
+        // FIX (Sprint 08): callers send either a bare id string or a {_id}
+        // stub (frontend) — the old code read debtorType/_id off the stub, so
+        // schedule sync + partner-balance meta silently never ran, and bare
+        // ids 404'd. Resolve the real doc first.
+        const Debt = (await import('../../models/Debt.js')).default;
+        const debtDoc = await Debt.findById(debt?._id ?? debt);
+        if (!debtDoc) throw new NotFoundError('الدين غير موجود');
+
         // T-BIZ-01: manual debt payment all-or-nothing
         return withRetry(() => withTransaction(async (session) => {
+            const debt = debtDoc;
             if (debt.debtorType === 'Customer') {
                 await this.updateSchedulesAfterPayment(debt.debtorId, 'Customer', amount, session);
             } else if (debt.debtorType === 'Supplier') {

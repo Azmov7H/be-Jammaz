@@ -337,35 +337,42 @@ export class DebtService {
         }
 
         const amountPerInstallment = Math.round((debt.remainingAmount / count) * 100) / 100;
-        const schedules = [];
-        const baseDate = new Date(startDate);
-
-        for (let i = 0; i < count; i++) {
-            const dueDate = new Date(baseDate);
-            if (interval === 'monthly') dueDate.setMonth(dueDate.getMonth() + i);
-            else if (interval === 'weekly') dueDate.setDate(dueDate.getDate() + (i * 7));
-            else if (interval === 'daily') dueDate.setDate(dueDate.getDate() + i);
-
-            // Last installment adjustment for rounding
-            const actualAmount = (i === count - 1)
-                ? (debt.remainingAmount - (amountPerInstallment * (count - 1)))
-                : amountPerInstallment;
-
-            schedules.push({
-                entityType: debt.debtorType,
-                entityId: debt.debtorId,
-                debtId: debt._id,
-                amount: actualAmount,
-                dueDate,
-                status: 'PENDING',
-                createdBy: userId,
-                notes: `قسط رقم ${i + 1} من أصل ${count} - مديونية #${debt.referenceId?.toString().slice(-6).toUpperCase()}`
-            });
-        }
+        // FIX (Sprint 08): the schedule build moved INSIDE the transaction —
+        // amounts were previously derived from a stale pre-txn read, so a
+        // re-plan racing a payment over-scheduled against money already paid.
+        const baseDate = startDate ? new Date(startDate) : new Date();
 
         // T-BIZ-03: delete + insert + debt meta update in one transaction —
         // re-scheduling can never leave a half-replaced plan.
         const createdSchedules = await withTransaction(async (session) => {
+            const fresh = await Debt.findById(debtId).session(session);
+            if (!fresh) throw new NotFoundError('الديون المطلوبة غير موجودة في النظام (Debt not found)');
+            const perInstallment = Math.round((fresh.remainingAmount / count) * 100) / 100;
+            const schedules = [];
+
+            for (let i = 0; i < count; i++) {
+                const dueDate = new Date(baseDate);
+                if (interval === 'monthly') dueDate.setMonth(dueDate.getMonth() + i);
+                else if (interval === 'weekly') dueDate.setDate(dueDate.getDate() + (i * 7));
+                else if (interval === 'daily') dueDate.setDate(dueDate.getDate() + i);
+
+                // Last installment adjustment for rounding
+                const actualAmount = (i === count - 1)
+                    ? (fresh.remainingAmount - (perInstallment * (count - 1)))
+                    : perInstallment;
+
+                schedules.push({
+                    entityType: fresh.debtorType,
+                    entityId: fresh.debtorId,
+                    debtId: fresh._id,
+                    amount: actualAmount,
+                    dueDate,
+                    status: 'PENDING',
+                    createdBy: userId,
+                    notes: `قسط رقم ${i + 1} من أصل ${count} - مديونية #${fresh.referenceId?.toString().slice(-6).toUpperCase()}`
+                });
+            }
+
             await PaymentSchedule.deleteMany({ debtId, status: 'PENDING' }, { session });
             const inserted = await PaymentSchedule.insertMany(schedules, { session });
 
@@ -380,6 +387,8 @@ export class DebtService {
             );
             return inserted;
         });
+
+        void amountPerInstallment;
 
         // Keep the in-memory doc consistent for the caller (meta persisted in txn)
         if (!debt.meta) debt.meta = new Map();
