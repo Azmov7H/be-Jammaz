@@ -1,3 +1,4 @@
+import logger from '../lib/logger.js';
 import mongoose from 'mongoose';
 import dbConnect from '../lib/db.js';
 import { ALLOW_NON_ATOMIC_DEV, IS_PRODUCTION } from '../lib/config.js';
@@ -49,17 +50,19 @@ export async function withTransaction(fn) {
         if (IS_PRODUCTION) {
             throw new Error(
                 '[DB] Transactions unsupported but required in production. ' +
-                'MongoDB must run as a replica set.'
+                'MongoDB must run as a replica set.',
+                { cause: error }
             );
         }
         if (!ALLOW_NON_ATOMIC_DEV) {
             throw new Error(
                 '[DB] Transactions not supported by this topology. ' +
                 'Use a replica set (mongod --replSet rs0) or set ALLOW_NON_ATOMIC_DEV=true ' +
-                'to explicitly accept non-atomic development runs.'
+                'to explicitly accept non-atomic development runs.',
+                { cause: error }
             );
         }
-        console.warn('[DB] NON-ATOMIC FALLBACK ACTIVE (ALLOW_NON_ATOMIC_DEV=true). Data integrity degraded.');
+        logger.warn('[DB] NON-ATOMIC FALLBACK ACTIVE (ALLOW_NON_ATOMIC_DEV=true). Data integrity degraded.');
         session = null;
     }
 

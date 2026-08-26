@@ -47,13 +47,13 @@ router.get('/:id/pricing', validateParams(idParams), routeHandler(async (req) =>
 }));
 
 // Set Customer Custom Price
-router.post('/:id/pricing', validateParams(idParams), validate(z.object({ productId: idSchema, price: customPriceSchema.shape.price })), routeHandler(async (req) => {
+router.post('/:id/pricing', validateParams(idParams), roleMiddleware(['owner', 'manager']), validate(z.object({ productId: idSchema, price: customPriceSchema.shape.price })), routeHandler(async (req) => {
     const { productId, price } = req.body;
     return await PricingService.setCustomPrice(req.params.id, productId, price, req.user._id);
 }));
 
 // Remove Customer Custom Price
-router.delete('/:id/pricing', validateParams(idParams), routeHandler(async (req) => {
+router.delete('/:id/pricing', validateParams(idParams), roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
     const { productId } = req.query;
     return await PricingService.removeCustomPrice(req.params.id, productId);
 }));

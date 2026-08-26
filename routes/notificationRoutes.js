@@ -22,7 +22,9 @@ router.get('/', routeHandler(async (req) => {
 }));
 
 // Mark notifications as read
-router.patch('/mark-read', validate(markReadSchema), routeHandler(async (req) => {
+// FIX (Sprint 08): schema previously applied to the raw body while the
+// frontend (and service contract) send { ids } — every real call 400'd.
+router.patch('/mark-read', validate(z.object({ ids: markReadSchema })), routeHandler(async (req) => {
     const { ids } = req.body;
     const markAll = ids === 'all';
     return await NotificationService.markRead(req.user._id, markAll ? [] : (Array.isArray(ids) ? ids : [ids]), markAll);
