@@ -56,7 +56,10 @@ export const PurchaseOrderService = {
         // This likely updates stock inside FinanceService OR StockService call. 
         // Based on `StockService.increaseStockForPurchase` seen earlier, FinanceService probably calls that.
 
-        await FinanceService.recordPurchaseReceive(po, userId, paymentType);
+        // FIX (Sprint 08): fall back to the PO's own payment type — a bare
+        // /receive call previously defaulted to 'cash' and paid the PO that
+        // was created as credit.
+        await FinanceService.recordPurchaseReceive(po, userId, paymentType || po.paymentType);
 
         return await PurchaseOrder.findById(id); // Return updated PO
     },

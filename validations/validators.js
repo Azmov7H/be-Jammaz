@@ -197,7 +197,10 @@ export const poStatusSchema = z.object({
 });
 
 export const poReceiveSchema = z.object({
-    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).default('cash'),
+    // FIX (Sprint 08): no .default('cash') here — a bare /receive call must
+    // fall back to the PO's own payment type (credit stays credit), not be
+    // silently paid in cash.
+    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).optional(),
     receivedItems: z.array(z.object({
         productId: idField,
         quantity: qty,

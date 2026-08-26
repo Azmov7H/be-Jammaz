@@ -167,6 +167,10 @@ export const TreasuryService = {
      */
     async recordPurchaseExpense(purchaseOrder, userId, session = null) {
         // Create treasury transaction
+        // FIX (Sprint 08): 'credit' is not a valid TreasuryTransaction method —
+        // coerce to cash (the movement itself only happens for non-credit POs).
+        const payMethod = ['bank', 'wallet', 'check'].includes(purchaseOrder.paymentType)
+            ? purchaseOrder.paymentType : 'cash';
         const typeLabel = purchaseOrder.paymentType === 'wallet' ? '(محفظة)' :
             purchaseOrder.paymentType === 'bank' ? '(بنك)' :
                 purchaseOrder.paymentType === 'check' ? '(شيك)' : '';
@@ -179,7 +183,7 @@ export const TreasuryService = {
             referenceId: purchaseOrder._id,
             partnerId: purchaseOrder.supplier,
             date: purchaseOrder.receivedDate || new Date(),
-            method: purchaseOrder.paymentType || 'cash',
+            method: payMethod,
             createdBy: userId
         }], session);
 

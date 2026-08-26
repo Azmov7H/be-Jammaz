@@ -178,8 +178,16 @@ export const PaymentService = {
      */
     async recordSupplierPayment(po, amount, method, note, userId) {
         await dbConnect();
+
+        // FIX (Sprint 08): callers pass a bare PO id (frontend) or stub —
+        // resolve the real document first, otherwise _id reads undefined.
+        const PurchaseOrder = (await import('../../models/PurchaseOrder.js')).default;
+        const poDoc = await PurchaseOrder.findById(po?._id ?? po);
+        if (!poDoc) throw new NotFoundError('أمر الشراء غير موجود');
+
         // T-BIZ-01: PO + debt/supplier + treasury in one txn
         return withRetry(() => withTransaction(async (session) => {
+            const po = poDoc;
             // Atomic capped increment on the PO (T-DB-06 primitive)
             const updatedPo = await po.constructor.findOneAndUpdate(
                 { _id: po._id },

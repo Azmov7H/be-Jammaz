@@ -1,4 +1,4 @@
-import logger from '../lib/logger.js';
+import { logger } from '../lib/logger.js';
 import mongoose from 'mongoose';
 import dbConnect from '../lib/db.js';
 import { ALLOW_NON_ATOMIC_DEV, IS_PRODUCTION } from '../lib/config.js';

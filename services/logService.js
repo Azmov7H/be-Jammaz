@@ -1,4 +1,4 @@
-import logger from '../lib/logger.js';
+import { logger } from '../lib/logger.js';
 import Log from '../models/Log.js';
 import { parsePagination } from '../lib/paginate.js';
 import dbConnect from '../lib/db.js';
