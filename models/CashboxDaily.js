@@ -79,7 +79,7 @@ const CashboxDailySchema = new mongoose.Schema({
         },
         category: {
             type: String,
-            enum: ['rent', 'utilities', 'salaries', 'supplies', 'other'],
+            enum: ['rent', 'utilities', 'salaries', 'supplies', 'maintenance', 'marketing', 'other'],
             default: 'other'
         },
         createdBy: {
