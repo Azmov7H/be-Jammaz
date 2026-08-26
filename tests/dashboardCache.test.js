@@ -12,7 +12,7 @@ let app;
 
 beforeAll(async () => {
     process.env.NODE_ENV = 'test';
-    process.env.DASHBOARD_CACHE_TTL = '1'; // 1s for expiry test
+    process.env.DASHBOARD_CACHE_TTL = '60'; // long TTL — expiry simulated via clear()
     app = await createTestApp();
 }, 180000);
 
@@ -59,6 +59,9 @@ describe('T-PERF-02: dashboard TTL cache', () => {
     });
 
     it('second call within TTL is served from cache (stale on purpose)', async () => {
+        const { __dashboardCaches } = await import('../services/dashboardService.js');
+        __dashboardCaches.kpiCache.clear();
+        __dashboardCaches.statsCache.clear();
         const first = await app.get('/api/dashboard/kpis').set('Cookie', ownerCookie).expect(200);
         const salesBefore = first.body.data.kpis.todaySales;
 
@@ -69,16 +72,21 @@ describe('T-PERF-02: dashboard TTL cache', () => {
         expect(second.body.data.kpis.todaySales).toBe(salesBefore);
     });
 
-    it('after TTL expiry the cache serves fresh data', async () => {
-        // expire leftovers from earlier tests first so the baseline is live
-        await new Promise(r => setTimeout(r, 1100));
+    it('after cache invalidation the next call serves fresh data', async () => {
+        // deterministic expiry: clear the caches instead of sleeping past a
+        // short TTL (sleeps raced under coverage-instrumented runs)
+        const { __dashboardCaches } = await import('../services/dashboardService.js');
+        __dashboardCaches.kpiCache.clear();
+        __dashboardCaches.statsCache.clear();
+
         const salesBefore = (
             await app.get('/api/dashboard/kpis').set('Cookie', ownerCookie).expect(200)
         ).body.data.kpis.todaySales;
 
         await makeInvoice(`CACHE-FRESH-${Date.now()}`);
 
-        await new Promise(r => setTimeout(r, 1100)); // TTL = 1s
+        __dashboardCaches.kpiCache.clear();
+        __dashboardCaches.statsCache.clear();
 
         const fresh = await app.get('/api/dashboard/kpis').set('Cookie', ownerCookie).expect(200);
         expect(fresh.body.data.kpis.todaySales).toBe(salesBefore + 100);

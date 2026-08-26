@@ -23,6 +23,9 @@ function roleScope(role) {
     return ['owner', 'manager'].includes(role) ? 'privileged' : 'staff';
 }
 
+// exported for deterministic test control (clear between scenarios)
+export const __dashboardCaches = { kpiCache, statsCache };
+
 export const DashboardService = {
     async getKPIs(role = 'viewer') {
         const cacheKey = `kpis:${roleScope(role)}`;
