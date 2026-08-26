@@ -30,8 +30,8 @@ const PaymentScheduleSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['PENDING', 'PAID', 'OVERDUE', 'CANCELLED'],
-        default: 'PENDING'
+        enum: ['pending', 'paid', 'overdue', 'cancelled'],
+        default: 'pending'
     },
 
     // Optional metadata

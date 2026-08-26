@@ -367,13 +367,13 @@ export class DebtService {
                     debtId: fresh._id,
                     amount: actualAmount,
                     dueDate,
-                    status: 'PENDING',
+                    status: 'pending',
                     createdBy: userId,
                     notes: `قسط رقم ${i + 1} من أصل ${count} - مديونية #${fresh.referenceId?.toString().slice(-6).toUpperCase()}`
                 });
             }
 
-            await PaymentSchedule.deleteMany({ debtId, status: 'PENDING' }, { session });
+            await PaymentSchedule.deleteMany({ debtId, status: 'pending' }, { session });
             const inserted = await PaymentSchedule.insertMany(schedules, { session });
 
             await Debt.findByIdAndUpdate(

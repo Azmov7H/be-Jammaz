@@ -399,7 +399,7 @@ export class NotificationService {
 
 
         const soonInstallments = await PaymentSchedule.find({
-            status: { $in: ['PENDING', 'OVERDUE'] },
+            status: { $in: ['pending', 'overdue'] },
             dueDate: { $lte: targetDate }
         }).populate({
             path: 'debtId',

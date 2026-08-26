@@ -135,7 +135,7 @@ describe('T-TST-03: credit invoice + installments → partial payments → close
         // schedules reflect the collected money
         const PaymentSchedule = (await import('../models/PaymentSchedule.js')).default;
         const schedules = await PaymentSchedule.find({ debtId: debt._id }).lean();
-        const pendingSum = schedules.filter((s) => s.status === 'PENDING')
+        const pendingSum = schedules.filter((s) => s.status === 'pending')
             .reduce((a, s) => a + s.amount, 0);
         expect(pendingSum).toBeCloseTo(400, 2);
 

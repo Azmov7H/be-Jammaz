@@ -27,7 +27,7 @@ export const PaymentService = {
         const schedules = await PaymentSchedule.find({
             entityId,
             entityType,
-            status: { $in: ['PENDING', 'OVERDUE'] }
+            status: { $in: ['pending', 'overdue'] }
         }).sort({ dueDate: 1 }).session(session);
 
         let remaining = amount;
@@ -38,7 +38,7 @@ export const PaymentService = {
             if (remaining >= schedule.amount) {
                 remaining -= schedule.amount;
                 schedule.amount = 0;
-                schedule.status = 'PAID';
+                schedule.status = 'paid';
                 schedule.paidAt = new Date();
                 await schedule.save({ session });
             } else {

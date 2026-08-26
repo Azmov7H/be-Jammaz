@@ -9,7 +9,7 @@ const ShortageReportSchema = new mongoose.Schema({
     requesterName: String,
     status: {
         type: String,
-        enum: ['PENDING', 'viewed', 'RESOLVED'],
+        enum: ['PENDING', 'VIEWED', 'RESOLVED'],
         default: 'PENDING'
     },
     notes: String

@@ -235,7 +235,7 @@ describe('T-TST-02: installment re-plan during payment', () => {
 
         // invariant 2: pending principal across schedules == remaining debt
         const pendingSum = schedules
-            .filter((s) => s.status === 'PENDING')
+            .filter((s) => s.status === 'pending')
             .reduce((acc, s) => acc + s.amount, 0);
         const afterDebt = await Debt.findById(debt._id).lean();
         expect(pendingSum).toBeCloseTo(afterDebt.remainingAmount, 0);
