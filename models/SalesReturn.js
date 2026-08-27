@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-const SalesReturnSchema = new mongoose.Schema({
+const SalesReturnSchema = new mongoose.Schema({ // T-DB-01 indexes at bottom
     returnNumber: { type: String, required: true, unique: true },
     date: { type: Date, default: Date.now },
 
@@ -14,7 +14,7 @@ const SalesReturnSchema = new mongoose.Schema({
         productName: { type: String, required: true },
         qty: { type: Number, required: true },
         unitPrice: { type: Number, required: true },
-        refundAmount: { type: Number, required: true },
+        refundAmount: { type: Number, required: true, min: 0 }, // T-DB-02
         reason: String
     }],
 
@@ -49,9 +49,8 @@ const SalesReturnSchema = new mongoose.Schema({
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
-if (mongoose.models.SalesReturn) {
-    delete mongoose.models.SalesReturn;
-}
-export default mongoose.model('SalesReturn', SalesReturnSchema);
+export default mongoose.models.SalesReturn || mongoose.model('SalesReturn', SalesReturnSchema);
 
-
+// T-DB-01
+SalesReturnSchema.index({ originalInvoice: 1 });
+SalesReturnSchema.index({ customer: 1 });

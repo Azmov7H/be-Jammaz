@@ -1,5 +1,8 @@
 import Supplier from '../models/Supplier.js';
+import { literalContains } from '../lib/safeRegex.js';
+import { withTransaction } from '../utils/dbUtils.js';
 import dbConnect from '../lib/db.js';
+import { NotFoundError, ConflictError } from '../lib/errors.js';
 
 export const SupplierService = {
     async getAll({ page = 1, limit = 20, search }) {
@@ -8,9 +11,9 @@ export const SupplierService = {
         const query = {};
         if (search) {
             query.$or = [
-                { name: { $regex: search, $options: 'i' } },
-                { contactName: { $regex: search, $options: 'i' } },
-                { phone: { $regex: search, $options: 'i' } }
+                { name: literalContains(search) },
+                { contactName: literalContains(search) },
+                { phone: literalContains(search) }
             ];
         }
 
@@ -34,7 +37,7 @@ export const SupplierService = {
     async getById(id) {
         await dbConnect();
         const supplier = await Supplier.findById(id).lean();
-        if (!supplier) throw 'Supplier not found';
+        if (!supplier) throw new NotFoundError('Supplier not found');
         return supplier;
     },
 
@@ -45,13 +48,15 @@ export const SupplierService = {
 
         const existing = await Supplier.findOne({ name: supplierData.name });
         if (existing) {
-            throw 'اسم المورد موجود بالفعل';
+            throw new ConflictError('اسم المورد موجود بالفعل');
         }
 
-        const supplier = await Supplier.create({
+        // T-BIZ-03: supplier + debt + accounting entry all-or-nothing
+        return withTransaction(async (session) => {
+        const supplier = await Supplier.create([{
             ...supplierData,
             balance: 0
-        });
+        }], { session }).then((r) => r[0]);
 
         if (openingBalance && openingBalance > 0) {
             const AccountingEntry = (await import('../models/AccountingEntry.js')).default;
@@ -67,7 +72,7 @@ export const SupplierService = {
                     description: `رصيد افتتاحي للمورد: ${supplier.name}`,
                     refType: 'Manual',
                     refId: supplier._id
-                });
+                }, session);
 
                 // Create Debt Record for granular tracking
                 await DebtService.createDebt({
@@ -79,7 +84,7 @@ export const SupplierService = {
                     referenceId: supplier._id,
                     description: `رصيد افتتاحي (مديونية سابقة)`,
                     createdBy: null // Service will handle or we can pass if added to params
-                });
+                }, session);
             } else {
                 // Supplier owes us (Debit AP)
                 await AccountingEntry.createEntry({
@@ -90,24 +95,25 @@ export const SupplierService = {
                     description: `رصيد افتتاحي مدين (لنا) عند المورد: ${supplier.name}`,
                     refType: 'Manual',
                     refId: supplier._id
-                });
+                }, session);
             }
         }
 
         return supplier;
+        });
     },
 
     async update(id, data) {
         await dbConnect();
         const supplier = await Supplier.findByIdAndUpdate(id, data, { new: true });
-        if (!supplier) throw 'Supplier not found';
+        if (!supplier) throw new NotFoundError('Supplier not found');
         return supplier;
     },
 
     async delete(id) {
         await dbConnect();
         const supplier = await Supplier.findByIdAndDelete(id);
-        if (!supplier) throw 'Supplier not found';
+        if (!supplier) throw new NotFoundError('Supplier not found');
         return { message: 'Supplier deleted' };
     }
 };

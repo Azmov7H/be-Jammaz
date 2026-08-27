@@ -2,6 +2,7 @@ import DailySales from '../models/DailySales.js';
 import Invoice from '../models/Invoice.js';
 import Product from '../models/Product.js';
 import { toIdString } from '../utils/idUtils.js';
+import { boundedRange } from '../lib/paginate.js';
 
 /**
  * Daily Sales Tracking Service
@@ -96,10 +97,12 @@ export const DailySalesService = {
      * Get sales summary for date range
      */
     async getSalesSummary(startDate, endDate) {
+        // T-PERF-01: hard cap at 180 days
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 180 });
         const sales = await DailySales.find({
             date: {
-                $gte: startDate,
-                $lte: endDate
+                $gte: range.startDate,
+                $lte: range.endDate
             }
         })
             .sort({ date: -1 })
@@ -130,10 +133,12 @@ export const DailySalesService = {
      * Get best selling products for date range
      */
     async getBestSellers(startDate, endDate, limit = 10) {
+        // T-PERF-01: hard cap at 180 days
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 180 });
         const sales = await DailySales.find({
             date: {
-                $gte: startDate,
-                $lte: endDate
+                $gte: range.startDate,
+                $lte: range.endDate
             }
         }).lean();
 

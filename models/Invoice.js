@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { BadRequestError } from '../lib/errors.js';
 
 const InvoiceSchema = new mongoose.Schema({
     number: { type: String, required: true, unique: true },
@@ -6,17 +7,17 @@ const InvoiceSchema = new mongoose.Schema({
     items: [{
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }, // Optional for service items
         productName: { type: String, required: true },
-        qty: { type: Number, required: true },
-        unitPrice: { type: Number, required: true },
+        qty: { type: Number, required: true, min: 0 }, // T-DB-02
+        unitPrice: { type: Number, required: true, min: 0 }, // T-DB-02
         source: { type: String, enum: ['shop', 'warehouse'], default: 'shop' },
         isService: { type: Boolean, default: false }, // Service/custom items (no stock tracking)
-        total: { type: Number, required: true },
+        total: { type: Number, required: true, min: 0 }, // T-DB-02
         costPrice: { type: Number },
         profit: { type: Number }
     }],
-    subtotal: { type: Number, required: true },
-    tax: { type: Number, default: 0 },
-    total: { type: Number, required: true },
+    subtotal: { type: Number, required: true, min: 0 }, // T-DB-02
+    tax: { type: Number, default: 0, min: 0 }, // T-DB-02
+    total: { type: Number, required: true, min: 0 }, // T-DB-02
     usedCreditBalance: { type: Number, default: 0 },
 
     paymentType: {
@@ -29,7 +30,7 @@ const InvoiceSchema = new mongoose.Schema({
         enum: ['paid', 'partial', 'pending'],
         default: 'paid'
     },
-    paidAmount: { type: Number, default: 0 },
+    paidAmount: { type: Number, default: 0, min: 0 }, // T-DB-02
     dueDate: { type: Date },
 
     payments: [{
@@ -63,31 +64,33 @@ const InvoiceSchema = new mongoose.Schema({
 
 // Method to record payment
 InvoiceSchema.methods.recordPayment = function (amount, method, note, userId, session = null) {
-    this.payments.push({
-        amount,
-        method,
-        note,
-        recordedBy: userId,
-        date: new Date()
-    });
-
-    this.paidAmount = (this.paidAmount || 0) + amount;
-
-    // Update status
-    if (this.paidAmount >= this.total) {
-        this.paymentStatus = 'paid';
-        // Cap paid amount if it slightly exceeds due to rounding
-        if (this.paidAmount > this.total) this.paidAmount = this.total;
-    } else if (this.paidAmount > 0) {
-        this.paymentStatus = 'partial';
-    } else {
-        this.paymentStatus = 'pending';
+    // T-DB-06: negative/zero amounts rejected at entry; the mutation is a
+    // single atomic pipeline update — no read-modify-write race.
+    if (!(amount > 0)) {
+        throw new BadRequestError('قيمة الدفعة يجب أن تكون أكبر من صفر');
     }
+    const payment = { amount, method, note, recordedBy: userId, date: new Date() };
 
-    return this.save({ session });
+    return this.constructor.findOneAndUpdate(
+        { _id: this._id },
+        [
+            { $set: {
+                payments: { $concatArrays: [{ $ifNull: ['$payments', []] }, [payment]] },
+                paidAmount: { $min: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, amount] }, '$total'] }
+            } },
+            { $set: {
+                paymentStatus: {
+                    $cond: [{ $gte: ['$paidAmount', '$total'] }, 'paid',
+                        { $cond: [{ $gt: ['$paidAmount', 0] }, 'partial', 'pending'] }]
+                }
+            } }
+        ],
+        { new: true, session }
+    );
 };
 
 // Indexes for common queries
+InvoiceSchema.index({ dueDate: 1 });
 InvoiceSchema.index({ date: -1 });
 InvoiceSchema.index({ customer: 1 });
 InvoiceSchema.index({ paymentStatus: 1, date: -1 });  // For filtered lists

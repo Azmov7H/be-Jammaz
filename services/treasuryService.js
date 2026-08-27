@@ -1,9 +1,12 @@
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
+import TreasuryBalance from '../models/TreasuryBalance.js';
+import { boundedRange, parsePagination, MAX_LIMIT } from '../lib/paginate.js';
 import CashboxDaily from '../models/CashboxDaily.js';
 import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 
 import Debt from '../models/Debt.js';
+import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
 /**
  * Treasury/Cashbox Management Service
@@ -19,7 +22,7 @@ export const TreasuryService = {
 
         // Create treasury transaction
         const method = invoice.paymentType || 'cash';
-        const transaction = await TreasuryTransaction.create([{
+        const transaction = await this._createTransactions([{
             type: 'INCOME',
             receiptNumber,
             amount: invoice.total,
@@ -30,7 +33,7 @@ export const TreasuryService = {
             date: invoice.date || new Date(),
             method: method,
             createdBy: userId
-        }], { session });
+        }], session);
 
         // Update daily cashbox based on method
         const updateField = method === 'bank' ? 'bankIncome' :
@@ -90,7 +93,7 @@ export const TreasuryService = {
                 method === 'check' ? '(شيك)' : '';
         const receiptNumber = await this.getNextReceiptNumber(session);
 
-        const transaction = await TreasuryTransaction.create([{
+        const transaction = await this._createTransactions([{
             type: 'INCOME',
             receiptNumber,
             amount: amount,
@@ -102,7 +105,7 @@ export const TreasuryService = {
             createdBy: userId,
             method: method,
             meta: meta
-        }], { session });
+        }], session);
 
         // Update daily cashbox based on method
         const updateField = method === 'bank' ? 'bankIncome' :
@@ -118,14 +121,16 @@ export const TreasuryService = {
      * Record a transaction (collection/payment) for a generic debt (Manual/Opening Balance)
      */
     async recordDebtTransaction(debtId, partnerId, amount, type, userId, description, method = 'cash', meta = {}, session = null) {
-        let receiptNumber = null;
+        // CONCURRENCY FIX (Sprint 08): omit the key for EXPENSE rows instead of
+        // storing receiptNumber: null — the sparse unique index treats explicit
+        // null as a value, so the SECOND null-receipt insert died with E11000.
+        let receiptNumber;
         if (type === 'INCOME') {
             receiptNumber = await this.getNextReceiptNumber(session);
         }
 
-        const transaction = await TreasuryTransaction.create([{
+        const debtTxDoc = {
             type: type, // 'INCOME' or 'EXPENSE'
-            receiptNumber,
             amount: amount,
             description: description,
             referenceType: 'Debt',
@@ -135,7 +140,10 @@ export const TreasuryService = {
             method: method,
             createdBy: userId,
             meta: meta
-        }], { session });
+        };
+        if (receiptNumber !== undefined) debtTxDoc.receiptNumber = receiptNumber;
+
+        const transaction = await this._createTransactions([debtTxDoc], session);
 
         // Update daily cashbox based on method
         let updateField;
@@ -159,11 +167,15 @@ export const TreasuryService = {
      */
     async recordPurchaseExpense(purchaseOrder, userId, session = null) {
         // Create treasury transaction
+        // FIX (Sprint 08): 'credit' is not a valid TreasuryTransaction method —
+        // coerce to cash (the movement itself only happens for non-credit POs).
+        const payMethod = ['bank', 'wallet', 'check'].includes(purchaseOrder.paymentType)
+            ? purchaseOrder.paymentType : 'cash';
         const typeLabel = purchaseOrder.paymentType === 'wallet' ? '(محفظة)' :
             purchaseOrder.paymentType === 'bank' ? '(بنك)' :
                 purchaseOrder.paymentType === 'check' ? '(شيك)' : '';
 
-        const transaction = await TreasuryTransaction.create([{
+        const transaction = await this._createTransactions([{
             type: 'EXPENSE',
             amount: purchaseOrder.totalCost,
             description: `مشتريات ${typeLabel} - أمر شراء #${purchaseOrder.poNumber} (المورد: ${purchaseOrder.supplier?.name || '---'})`,
@@ -171,9 +183,9 @@ export const TreasuryService = {
             referenceId: purchaseOrder._id,
             partnerId: purchaseOrder.supplier,
             date: purchaseOrder.receivedDate || new Date(),
-            method: purchaseOrder.paymentType || 'cash',
+            method: payMethod,
             createdBy: userId
-        }], { session });
+        }], session);
 
         // Update daily cashbox based on method
         const method = purchaseOrder.paymentType || 'cash';
@@ -195,7 +207,7 @@ export const TreasuryService = {
         const methodLabel = method === 'bank' ? '(بنك)' :
             method === 'wallet' ? '(محفظة)' :
                 method === 'check' ? '(شيك)' : '';
-        const transaction = await TreasuryTransaction.create([{
+        const transaction = await this._createTransactions([{
             type: 'EXPENSE',
             amount: amount,
             description: `سداد للمورد: ${supplier?.name || '---'} - أمر #${poNumber} ${methodLabel} ${note ? `- ${note}` : ''}`,
@@ -206,7 +218,7 @@ export const TreasuryService = {
             method: method,
             createdBy: userId,
             meta: meta
-        }], { session });
+        }], session);
 
         // Update daily cashbox based on method
         const updateField = method === 'bank' ? 'bankExpenses' :
@@ -254,22 +266,27 @@ export const TreasuryService = {
             cashbox = created[0];
         }
 
-        // Update with increments
+        // T-DB-06: atomic increment — no read-modify-write on balances.
         const allowedFields = [
             'salesIncome', 'purchaseExpenses',
             'bankIncome', 'bankExpenses',
             'walletIncome', 'walletExpenses',
             'checkIncome', 'checkExpenses',
-            'adjustment' // Added but typically not incremented here
+            'adjustment'
         ];
 
+        const incUpdate = {};
         for (const [field, amount] of Object.entries(updates)) {
-            if (allowedFields.includes(field) && amount) {
-                cashbox[field] = (cashbox[field] || 0) + amount;
-            }
+            if (allowedFields.includes(field) && amount) incUpdate[field] = amount;
         }
 
-        await cashbox.save({ session });
+        if (Object.keys(incUpdate).length > 0) {
+            cashbox = await CashboxDaily.findOneAndUpdate(
+                { _id: cashbox._id },
+                { $inc: incUpdate },
+                { new: true, session }
+            );
+        }
         return cashbox;
     },
 
@@ -297,7 +314,7 @@ export const TreasuryService = {
         await cashbox.addIncome(amount, reason, userId, session);
 
         // Also record in treasury transactions
-        await TreasuryTransaction.create([{
+        await this._createTransactions([{
             type: 'INCOME',
             amount,
             description: reason,
@@ -305,7 +322,7 @@ export const TreasuryService = {
             date: new Date(),
             method,
             createdBy: userId
-        }], { session });
+        }], session);
 
         // If it's bank or wallet, we need to update the specific fields too
         // (CashboxDaily.addIncome only increments manualIncome array and openingBalance in its own way?)
@@ -343,7 +360,7 @@ export const TreasuryService = {
         await cashbox.addExpense(amount, reason, category, userId, session);
 
         // Also record in treasury transactions
-        await TreasuryTransaction.create([{
+        await this._createTransactions([{
             type: 'EXPENSE',
             amount,
             description: reason,
@@ -351,7 +368,7 @@ export const TreasuryService = {
             date: new Date(),
             method,
             createdBy: userId
-        }], { session });
+        }], session);
 
         if (method !== 'cash') {
             const updateField = method === 'bank' ? 'bankExpenses' :
@@ -376,7 +393,7 @@ export const TreasuryService = {
             [updateField]: -amount // Negative income reflects a refund
         }, session);
 
-        const transaction = await TreasuryTransaction.create([{
+        const transaction = await this._createTransactions([{
             type: 'EXPENSE',
             amount: amount,
             description: `استرداد نقدي - مرتجع #${salesReturn.returnNumber}`,
@@ -386,7 +403,7 @@ export const TreasuryService = {
             date: new Date(),
             method: method,
             createdBy: userId
-        }], { session });
+        }], session);
 
         return transaction[0];
     },
@@ -401,7 +418,7 @@ export const TreasuryService = {
         const cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
 
         if (!cashbox) {
-            throw new Error('لم يتم العثور على سجل الخزينة لهذا اليوم');
+            throw new NotFoundError('لم يتم العثور على سجل الخزينة لهذا اليوم');
         }
 
         await cashbox.reconcile(actualClosingBalance, userId, notes, session);
@@ -410,11 +427,57 @@ export const TreasuryService = {
     },
 
     /**
-     * Get current balance
-     * Calculates the total balance from all treasury transactions
+     * T-PERF-03: transactionally bump the running balance doc.
+     */
+    async _applyBalanceDelta(delta, session = null) {
+        await TreasuryBalance.findOneAndUpdate(
+            { _id: TreasuryBalance.DOC_ID },
+            [
+                { $set: {
+                    balance: { $add: [{ $ifNull: ['$balance', 0] }, delta] },
+                    updatedAt: '$$NOW'
+                } }
+            ],
+            { upsert: true, session }
+        );
+    },
+
+    /**
+     * T-PERF-03: single choke point for treasury writes — creates the
+     * transactions and moves the running balance in the same session.
+     */
+    async _createTransactions(docs, session = null) {
+        const created = await TreasuryTransaction.create(docs, { session });
+        const delta = docs.reduce(
+            (sum, d) => sum + (d.type === 'INCOME' ? d.amount : -d.amount), 0
+        );
+        await this._applyBalanceDelta(delta, session);
+        return created;
+    },
+
+    /**
+     * T-PERF-03: reverse a deleted transaction's balance effect.
+     */
+    async _deleteTransaction(transaction, session = null) {
+        await transaction.deleteOne({ session });
+        const delta = transaction.type === 'INCOME' ? -transaction.amount : transaction.amount;
+        await this._applyBalanceDelta(delta, session);
+    },
+
+    /**
+     * Get current balance — reads the running-balance doc; lazily rebuilds
+     * from the full ledger when missing (first run / manual rollback).
      */
     async getCurrentBalance() {
-        // Calculate balance directly from all transactions for accuracy
+        const doc = await TreasuryBalance.findById(TreasuryBalance.DOC_ID).lean();
+        if (doc && typeof doc.balance === 'number') return doc.balance;
+        return this._rebuildBalance();
+    },
+
+    /**
+     * Full-ledger recompute; upserts the running doc.
+     */
+    async _rebuildBalance() {
         const result = await TreasuryTransaction.aggregate([
             {
                 $group: {
@@ -433,11 +496,15 @@ export const TreasuryService = {
             }
         ]);
 
-        if (!result || result.length === 0) {
-            return 0;
-        }
-
-        return (result[0].totalIncome || 0) - (result[0].totalExpense || 0);
+        const balance = (!result || result.length === 0)
+            ? 0
+            : (result[0].totalIncome || 0) - (result[0].totalExpense || 0);
+        await TreasuryBalance.findOneAndUpdate(
+            { _id: TreasuryBalance.DOC_ID },
+            [{ $set: { balance, updatedAt: '$$NOW' } }],
+            { upsert: true }
+        );
+        return balance;
     },
 
     /**
@@ -470,14 +537,12 @@ export const TreasuryService = {
     /**
      * Get all transactions for date range
      */
-    async getTransactions(startDate, endDate, type = null, partnerId = null) {
+    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100 } = {}) {
         const query = {};
 
-        if (startDate || endDate) {
-            query.date = {};
-            if (startDate) query.date.$gte = new Date(startDate);
-            if (endDate) query.date.$lte = new Date(endDate);
-        }
+        // T-PERF-01: default 30d window, hard-capped at 90d
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 90 });
+        query.date = { $gte: range.startDate, $lte: range.endDate };
 
         if (type && type !== 'ALL') {
             query.type = type;
@@ -487,8 +552,14 @@ export const TreasuryService = {
             query.partnerId = partnerId;
         }
 
+        // T-PERF-01: bounded page size (default 100, max MAX_LIMIT)
+        const { skip } = parsePagination({ page });
+        const cappedLimit = Math.min(Math.max(1, parseInt(limit, 10) || 100), MAX_LIMIT);
+
         return await TreasuryTransaction.find(query)
             .sort({ date: -1 })
+            .skip(skip)
+            .limit(cappedLimit)
             .populate('createdBy', 'name')
             .populate({
                 path: 'referenceId',
@@ -513,14 +584,17 @@ export const TreasuryService = {
         periodEnd.setHours(23, 59, 59, 999);
         periodStart.setHours(0, 0, 0, 0);
 
-        const transactions = await this.getTransactions(periodStart, periodEnd);
-
-        // 1. Calculate totals for this period
-        const totals = transactions.reduce((acc, tx) => {
-            if (tx.type === 'INCOME') acc.income += tx.amount;
-            if (tx.type === 'EXPENSE') acc.expense += tx.amount;
-            return acc;
-        }, { income: 0, expense: 0 });
+        // T-PERF-01: aggregate in DB — getTransactions is now page-capped,
+        // so summaries must never depend on it.
+        const totalsAgg = await TreasuryTransaction.aggregate([
+            { $match: { date: { $gte: periodStart, $lte: periodEnd } } },
+            { $group: { _id: '$type', total: { $sum: '$amount' } } }
+        ]);
+        const totals = { income: 0, expense: 0 };
+        for (const row of totalsAgg) {
+            if (row._id === 'INCOME') totals.income = row.total;
+            if (row._id === 'EXPENSE') totals.expense = row.total;
+        }
 
         // 2. Calculate Profit from Invoices in this period (Sales only)
         const profitAgg = await Invoice.aggregate([
@@ -575,6 +649,17 @@ export const TreasuryService = {
 
         const currentBalance = await this.getCurrentBalance();
 
+        // T-PERF-03: summary no longer returns the FULL transaction list —
+        // aggregates above plus the latest 20 in the period. Contract change:
+        // `transactions` -> `recentTransactions`.
+        const recentTransactions = await TreasuryTransaction.find({
+            date: { $gte: periodStart, $lte: periodEnd }
+        })
+            .sort({ date: -1 })
+            .limit(20)
+            .populate('createdBy', 'name')
+            .lean();
+
         return {
             balance: currentBalance,
             breakdown,
@@ -583,7 +668,7 @@ export const TreasuryService = {
             totalExpense: totals.expense,
             salesProfit: salesProfit,
             totalOutstandingDebt: totalOutstandingDebt,
-            transactions
+            recentTransactions
         };
     },
 
@@ -592,7 +677,7 @@ export const TreasuryService = {
      */
     async undoTransaction(transactionId, userId, session = null) {
         const transaction = await TreasuryTransaction.findById(transactionId).session(session);
-        if (!transaction) throw new Error('المعاملة غير موجودة');
+        if (!transaction) throw new NotFoundError('المعاملة غير موجودة');
 
         // Allow reversing Invoice/PurchaseOrder/Manual
         // if (transaction.referenceType !== 'Manual') {
@@ -647,8 +732,8 @@ export const TreasuryService = {
             await cashbox.save({ session });
         }
 
-        // 2. Delete the transaction record
-        await transaction.deleteOne({ session });
+        // 2. Delete the transaction record (reverses running balance)
+        await this._deleteTransaction(transaction, session);
 
         return { success: true };
     },
@@ -658,14 +743,25 @@ export const TreasuryService = {
      */
     async deleteTransactionByRef(refType, refId, session = null) {
         const transactions = await TreasuryTransaction.find({ referenceType: refType, referenceId: refId }).session(session);
+        if (transactions.length === 0) return;
 
-        for (const transaction of transactions) {
-            // Revert Cashbox impact
-            const startOfDay = new Date(transaction.date);
+        // T-PERF-04: single pass — group by day so each affected CashboxDaily
+        // is read/written once, then one deleteMany + one balance delta.
+        const byDay = new Map();
+        for (const tx of transactions) {
+            const startOfDay = new Date(tx.date);
             startOfDay.setHours(0, 0, 0, 0);
+            if (!byDay.has(startOfDay.getTime())) {
+                byDay.set(startOfDay.getTime(), { date: startOfDay, txs: [] });
+            }
+            byDay.get(startOfDay.getTime()).txs.push(tx);
+        }
 
-            const cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
-            if (cashbox) {
+        for (const { date, txs } of byDay.values()) {
+            const cashbox = await CashboxDaily.findOne({ date }).session(session);
+            if (!cashbox) continue;
+
+            for (const transaction of txs) {
                 if (transaction.type === 'INCOME') {
                     // Check manual first
                     const mIdx = cashbox.manualIncome.findIndex(x => x.amount === transaction.amount && x.reason === transaction.description);
@@ -690,30 +786,82 @@ export const TreasuryService = {
                         : (transaction.method === 'bank' ? 'bankExpenses' : transaction.method === 'wallet' ? 'walletExpenses' : 'checkExpenses');
                     cashbox[methodField] -= transaction.amount;
                 }
-
-                await cashbox.save({ session });
             }
 
-            await transaction.deleteOne({ session });
+            await cashbox.save({ session });
         }
+
+        await TreasuryTransaction.deleteMany(
+            { _id: { $in: transactions.map(t => t._id) } },
+            { session }
+        );
+        const netDelta = transactions.reduce(
+            (sum, t) => sum + (t.type === 'INCOME' ? -t.amount : t.amount), 0
+        );
+        await this._applyBalanceDelta(netDelta, session);
     },
 
     /**
      * Helper to get and increment the next receipt number
      */
     async getNextReceiptNumber(session = null) {
-        // We use a simple incrementing number stored in InvoiceSettings
+        // We use a simple incrementing number stored in InvoiceSettings.
+        //
+        // CONCURRENCY FIX (Sprint 08): the $inc deliberately runs OUTSIDE the
+        // caller's transaction (session ignored). Inside a txn, two parallel
+        // payments both read the same snapshot value, mint identical REC-n
+        // values, and one dies on the unique index with a NON-retryable
+        // E11000. Numbers may burn on abort — acceptable for receipts.
+        void session;
         const settings = await InvoiceSettings.findOneAndUpdate(
             { isActive: true },
             { $inc: { lastReceiptNumber: 1 } },
             {
                 new: true,
                 upsert: true,
-                session
             }
         );
 
         return `REC-${settings.lastReceiptNumber}`;
+    },
+
+    /**
+     * Assemble a printable receipt (transaction + partner + company settings).
+     */
+    async buildReceipt(transactionId) {
+        if (!transactionId || transactionId === 'undefined' || transactionId.length !== 24) {
+            throw new BadRequestError('رقم السند غير صحيح');
+        }
+
+        const Customer = (await import('../models/Customer.js')).default;
+        const Supplier = (await import('../models/Supplier.js')).default;
+
+        const transaction = await TreasuryTransaction.findById(transactionId)
+            .populate('referenceId')
+            .populate('createdBy', 'name')
+            .lean();
+
+        if (!transaction) throw new NotFoundError('السند غير موجود');
+
+        const settings = await InvoiceSettings.findOne().lean() || {
+            companyName: 'شركتكم',
+            showLogo: false
+        };
+
+        let partner = null;
+        let remainingBalance = 0;
+
+        if (transaction.referenceType === 'Customer' || transaction.referenceType === 'UnifiedCollection') {
+            partner = await Customer.findById(transaction.referenceId).lean();
+            remainingBalance = partner?.balance || 0;
+        }
+
+        if (transaction.referenceType === 'PurchaseOrder' || transaction.referenceType === 'Supplier') {
+            partner = await Supplier.findById(transaction.referenceId).lean();
+            remainingBalance = partner?.balance || 0;
+        }
+
+        return { transaction, partner, settings, remainingBalance };
     }
 };
 

@@ -1,36 +1,63 @@
 import { AuthService } from '../services/authService.js';
-import { z } from 'zod';
+import { verifyToken } from '../lib/auth.js';
+import { loginSchema } from '../validations/index.js';
 
-const loginSchema = z.object({
-    email: z.string().email('البريد الإلكتروني غير صالح'),
-    password: z.string().min(1, 'كلمة المرور مطلوبة')
-});
+const isProd = process.env.NODE_ENV === 'production';
+// COOKIE_SECURE overrides the secure flag — set to "false" for local HTTP
+// development when NODE_ENV=production. In Docker with Nginx HTTPS (port 8443),
+// this can remain unset (defaults to isProd=true).
+const cookieSecure = process.env.COOKIE_SECURE !== undefined
+    ? process.env.COOKIE_SECURE === 'true'
+    : isProd;
+const baseCookie = {
+    httpOnly: true,
+    secure: cookieSecure,
+    sameSite: 'lax',
+};
+
+function setAuthCookies(res, { token, refreshToken }) {
+        // Access cookie stays on '/' so API reads work as before.
+        res.cookie('token', token, {
+            ...baseCookie,
+            maxAge: 60 * 60 * 24 * 1000,
+            path: '/',
+        });
+        // Refresh cookie is scoped to the auth endpoints only.
+    res.cookie('refresh', refreshToken, {
+        ...baseCookie,
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+        path: '/api/auth',
+    });
+}
 
 export const AuthController = {
     async login(req, res) {
         const { email, password } = loginSchema.parse(req.body);
         const result = await AuthService.login({ email, password });
 
-        res.cookie('token', result.token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            maxAge: 60 * 60 * 24 * 1000,
-            path: '/',
-            sameSite: 'lax',
-        });
-        console.log(`[Auth] Cookie 'token' set for user: ${email}`);
+        setAuthCookies(res, result);
 
         return result.user;
     },
 
+    async refresh(req, res) {
+        const result = await AuthService.refresh(req.cookies.refresh);
+        setAuthCookies(res, result);
+        return { id: result.user._id.toString(), name: result.user.name, email: result.user.email, role: result.user.role };
+    },
+
     async logout(req, res) {
-        res.clearCookie('token');
+        // Route is unauthenticated by design; recover userId from the
+        // access cookie if present so revocation still happens.
+        const decoded = await verifyToken(req.cookies.token);
+        if (decoded?.userId) await AuthService.revokeAll(decoded.userId);
+        res.clearCookie('token', { path: '/' });
+        res.clearCookie('refresh', { path: '/api/auth' });
         return { message: 'Logged out' };
     },
 
     async getSession(req) {
         const token = req.cookies.token;
-        console.log(`[AuthController] getSession hit. Cookie token present: ${!!token}`);
         return await AuthService.getSession(token);
     },
 
@@ -38,14 +65,7 @@ export const AuthController = {
         const { code } = req.body;
         const result = await AuthService.handleGoogleCallback(code);
 
-        res.cookie('token', result.token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            maxAge: 60 * 60 * 24 * 1000,
-            path: '/',
-            sameSite: 'lax',
-        });
-
+        setAuthCookies(res, result);
         return result.user;
     }
 };

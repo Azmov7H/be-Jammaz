@@ -1,9 +1,12 @@
 import { DebtRepository } from '../../repositories/debtRepository.js';
+import { literalContains } from '../../lib/safeRegex.js';
 import Debt from '../../models/Debt.js';
 import '../../models/Customer.js';
 import '../../models/Supplier.js';
 import dbConnect from '../../lib/db.js';
 import { differenceInDays } from 'date-fns';
+import { BadRequestError, NotFoundError, ConflictError } from '../../lib/errors.js';
+import { withTransaction } from '../../utils/dbUtils.js';
 
 export class DebtService {
     /**
@@ -23,7 +26,7 @@ export class DebtService {
 
         // 1. Validation
         if (amount <= 0) {
-            throw new Error('Debt amount must be greater than zero');
+            throw new BadRequestError('Debt amount must be greater than zero');
         }
 
         // 2. duplication check (same reference)
@@ -117,21 +120,32 @@ export class DebtService {
      */
     static async updateBalance(id, amountPaid, session = null) {
         await dbConnect();
-        const debt = await Debt.findById(id).session(session);
-        if (!debt) throw new Error('Debt not found');
 
-        debt.remainingAmount -= amountPaid;
-
-        // Auto-settlement
-        if (debt.remainingAmount <= 0.01) { // 0.01 tolerance
-            debt.remainingAmount = 0;
-            debt.status = 'settled';
-        } else if (debt.status === 'settled') {
-            // Re-open if balance becomes positive (e.g. payment reversal)
-            debt.status = debt.dueDate < new Date() ? 'overdue' : 'active';
-        }
-
-        await debt.save({ session });
+        // T-DB-06: guarded atomic decrement — overpayment cannot drive the
+        // balance negative under concurrency; status flips conditionally.
+        const debt = await Debt.findOneAndUpdate(
+            { _id: id, remainingAmount: { $gte: amountPaid } },
+            [
+                { $set: {
+                    remainingAmount: {
+                        $cond: [
+                            { $lte: [{ $subtract: ['$remainingAmount', amountPaid] }, 0.01] },
+                            0,
+                            { $round: [{ $subtract: ['$remainingAmount', amountPaid] }, 2] }
+                        ]
+                    },
+                    status: {
+                        $cond: [
+                            { $lte: [{ $subtract: ['$remainingAmount', amountPaid] }, 0.01] },
+                            'settled',
+                            '$status'
+                        ]
+                    }
+                } }
+            ],
+            { new: true, session }
+        );
+        if (!debt) throw new NotFoundError('Debt not found');
 
         // Update Parent Balance (Consolidated)
         const Model = debt.debtorType === 'Customer'
@@ -151,7 +165,7 @@ export class DebtService {
     static async updateDebt(id, data) {
         await dbConnect();
         const debt = await Debt.findById(id).populate('debtorId', 'name');
-        if (!debt) throw new Error('Debt not found');
+        if (!debt) throw new NotFoundError('Debt not found');
 
         // Calculate old collected amount before changes
         const oldCollectedAmount = debt.originalAmount - debt.remainingAmount;
@@ -218,9 +232,9 @@ export class DebtService {
     static async writeOff(id, reason, userId) {
         await dbConnect();
         const debt = await Debt.findById(id);
-        if (!debt) throw new Error('Debt not found');
+        if (!debt) throw new NotFoundError('Debt not found');
 
-        if (debt.status === 'settled') throw new Error('Cannot write off settled debt');
+        if (debt.status === 'settled') throw new ConflictError('Cannot write off settled debt');
 
         debt.status = 'written-off';
         debt.meta = debt.meta || {};
@@ -310,59 +324,76 @@ export class DebtService {
         const { default: PaymentSchedule } = await import('../../models/PaymentSchedule.js');
 
         // Defensive check for ID
-        if (!debtId) throw new Error('Debt ID is required for scheduling');
+        if (!debtId) throw new BadRequestError('Debt ID is required for scheduling');
 
         const debt = await Debt.findById(debtId);
         if (!debt) {
-            throw new Error('الديون المطلوبة غير موجودة في النظام (Debt not found)');
+            throw new NotFoundError('الديون المطلوبة غير موجودة في النظام (Debt not found)');
         }
 
         const count = parseInt(installmentsCount);
         if (isNaN(count) || count <= 0) {
-            throw new Error('عدد الأقساط يجب أن يكون رقماً صحيحاً موجباً');
+            throw new BadRequestError('عدد الأقساط يجب أن يكون رقماً صحيحاً موجباً');
         }
 
         const amountPerInstallment = Math.round((debt.remainingAmount / count) * 100) / 100;
-        const schedules = [];
-        const baseDate = new Date(startDate);
+        // FIX (Sprint 08): the schedule build moved INSIDE the transaction —
+        // amounts were previously derived from a stale pre-txn read, so a
+        // re-plan racing a payment over-scheduled against money already paid.
+        const baseDate = startDate ? new Date(startDate) : new Date();
 
-        for (let i = 0; i < count; i++) {
-            const dueDate = new Date(baseDate);
-            if (interval === 'monthly') dueDate.setMonth(dueDate.getMonth() + i);
-            else if (interval === 'weekly') dueDate.setDate(dueDate.getDate() + (i * 7));
-            else if (interval === 'daily') dueDate.setDate(dueDate.getDate() + i);
+        // T-BIZ-03: delete + insert + debt meta update in one transaction —
+        // re-scheduling can never leave a half-replaced plan.
+        const createdSchedules = await withTransaction(async (session) => {
+            const fresh = await Debt.findById(debtId).session(session);
+            if (!fresh) throw new NotFoundError('الديون المطلوبة غير موجودة في النظام (Debt not found)');
+            const perInstallment = Math.round((fresh.remainingAmount / count) * 100) / 100;
+            const schedules = [];
 
-            // Last installment adjustment for rounding
-            const actualAmount = (i === count - 1)
-                ? (debt.remainingAmount - (amountPerInstallment * (count - 1)))
-                : amountPerInstallment;
+            for (let i = 0; i < count; i++) {
+                const dueDate = new Date(baseDate);
+                if (interval === 'monthly') dueDate.setMonth(dueDate.getMonth() + i);
+                else if (interval === 'weekly') dueDate.setDate(dueDate.getDate() + (i * 7));
+                else if (interval === 'daily') dueDate.setDate(dueDate.getDate() + i);
 
-            schedules.push({
-                entityType: debt.debtorType,
-                entityId: debt.debtorId,
-                debtId: debt._id,
-                amount: actualAmount,
-                dueDate,
-                status: 'PENDING',
-                createdBy: userId,
-                notes: `قسط رقم ${i + 1} من أصل ${count} - مديونية #${debt.referenceId?.toString().slice(-6).toUpperCase()}`
-            });
-        }
+                // Last installment adjustment for rounding
+                const actualAmount = (i === count - 1)
+                    ? (fresh.remainingAmount - (perInstallment * (count - 1)))
+                    : perInstallment;
 
-        // Delete existing scheduled payments for this debt to avoid overlaps if re-scheduling
-        await PaymentSchedule.deleteMany({ debtId, status: 'PENDING' });
+                schedules.push({
+                    entityType: fresh.debtorType,
+                    entityId: fresh.debtorId,
+                    debtId: fresh._id,
+                    amount: actualAmount,
+                    dueDate,
+                    status: 'pending',
+                    createdBy: userId,
+                    notes: `قسط رقم ${i + 1} من أصل ${count} - مديونية #${fresh.referenceId?.toString().slice(-6).toUpperCase()}`
+                });
+            }
 
-        const createdSchedules = await PaymentSchedule.insertMany(schedules);
+            await PaymentSchedule.deleteMany({ debtId, status: 'pending' }, { session });
+            const inserted = await PaymentSchedule.insertMany(schedules, { session });
 
-        // Update Debt Meta
-        if (!debt.meta) {
-            debt.meta = new Map();
-        }
+            await Debt.findByIdAndUpdate(
+                debtId,
+                { $set: {
+                    'meta.isScheduled': true,
+                    'meta.installmentsCount': installmentsCount,
+                    'meta.lastScheduledUpdate': new Date(),
+                } },
+                { session }
+            );
+            return inserted;
+        });
+
+        void amountPerInstallment;
+
+        // Keep the in-memory doc consistent for the caller (meta persisted in txn)
+        if (!debt.meta) debt.meta = new Map();
         debt.meta.set('isScheduled', true);
         debt.meta.set('installmentsCount', installmentsCount);
-        debt.meta.set('lastScheduledUpdate', new Date());
-
-        await debt.save();
 
         return createdSchedules;
     }
@@ -410,7 +441,7 @@ export class DebtService {
             : (await import('../../models/Customer.js')).default;
 
         const debtor = await Model.findById(debtorId);
-        if (!debtor) throw new Error('Debtor not found');
+        if (!debtor) throw new NotFoundError('Debtor not found');
 
         const balance = debtor.balance || 0;
         if (balance <= 0) return { message: 'Balance is zero or negative', count: 0 };
@@ -478,7 +509,7 @@ export class DebtService {
             // Search logic
             ...(filter.search ? [{
                 $match: {
-                    'debtorDetails.name': { $regex: filter.search, $options: 'i' }
+                    'debtorDetails.name': literalContains(filter.search)
                 }
             }] : []),
             {
@@ -531,7 +562,7 @@ export class DebtService {
     static async deleteDebt(id, session = null) {
         await dbConnect();
         const debt = await Debt.findById(id).session(session);
-        if (!debt) throw new Error('Debt not found');
+        if (!debt) throw new NotFoundError('Debt not found');
 
         // 1. Reverse Parent Balance
         const Model = debt.debtorType === 'Customer'

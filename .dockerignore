@@ -1,0 +1,14 @@
+node_modules
+.git
+coverage
+.env
+.env.*
+!.env.production-local
+docs
+tests
+scripts
+vitest.config.js
+eslint.config.js
+pnpm-lock.yaml
+pnpm-workspace.yaml
+README.md

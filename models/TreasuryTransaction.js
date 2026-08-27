@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import './UnifiedCollection.js'; // surrogate for refPath population
 
 const TreasuryTransactionSchema = new mongoose.Schema({
     type: {
@@ -8,7 +9,9 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     },
     receiptNumber: {
         type: String,
-        unique: false, // We'll handle uniqueness in service/app logic for simplicity with legacy data
+        unique: true, // T-DB-03 (pre-flight dupe check + dedupe script required before rollout)
+        sparse: true, // T-PERF-03 fix: expense/manual rows carry no receiptNumber —
+                      // non-sparse unique made the SECOND such insert a 11000 conflict
         index: true
     },
     amount: {
@@ -48,12 +51,6 @@ const TreasuryTransactionSchema = new mongoose.Schema({
         ref: 'User'
     }
 }, { timestamps: true });
-
-// Register a surrogate model for UnifiedCollection if it hasn't been registered yet.
-// This is used as an alias for Customer in TreasuryTransaction refPath.
-if (mongoose.models && !mongoose.models.UnifiedCollection) {
-    mongoose.model('UnifiedCollection', new mongoose.Schema({}, { strict: false }), 'customers');
-}
 
 // Compound indexes for dashboard and report queries
 TreasuryTransactionSchema.index({ type: 1, date: -1 });

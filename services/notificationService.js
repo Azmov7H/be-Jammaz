@@ -6,6 +6,7 @@ import InvoiceSettings from '../models/InvoiceSettings.js';
 import SystemMeta from '../models/SystemMeta.js';
 import User from '../models/User.js';
 import dbConnect from '../lib/db.js';
+import { NotFoundError } from '../lib/errors.js';
 
 export class NotificationService {
     /**
@@ -33,9 +34,7 @@ export class NotificationService {
         await dbConnect();
 
         // Map legacy fields to metadata if present
-        if (category) metadata.category = category;
-        if (actionType) metadata.actionType = actionType;
-        if (Object.keys(actionParams).length > 0) metadata.actionParams = actionParams;
+        const doc = this._buildSpec(arguments[0]);
 
         // 1. Deduplication Check
         if (deduplicationKey) {
@@ -57,19 +56,7 @@ export class NotificationService {
         }
 
         // 2. Create Notification
-        const notification = await Notification.create({
-            title,
-            message,
-            type,
-            severity,
-            source,
-            recipientId,
-            targetRole,
-            isGlobal,
-            link,
-            metadata,
-            isRead: false
-        });
+        const notification = await Notification.create({ ...doc, isRead: false });
 
         return notification;
     }
@@ -88,13 +75,7 @@ export class NotificationService {
         const user = await User.findById(userId).select('role');
         const role = user?.role;
 
-        const query = role === 'owner' ? {} : {
-            $or: [
-                { recipientId: userId },
-                { isGlobal: true },
-                { targetRole: role }
-            ]
-        };
+        const query = NotificationService.visibilityFilter(userId, role);
 
         if (unreadOnly) {
             query.isRead = false;
@@ -128,27 +109,35 @@ export class NotificationService {
         };
     }
 
+    /** Shared visibility predicate: what this user may see/touch (T-ACL-03). */
+    static visibilityFilter(userId, role) {
+        if (role === 'owner') return {};
+        return {
+            $or: [
+                { recipientId: userId },
+                { isGlobal: true },
+                { targetRole: role }
+            ]
+        };
+    }
+
     /**
      * Mark notifications as read
      */
     static async markRead(userId, ids, markAll = false) {
         await dbConnect();
+        const user = await User.findById(userId).select('role');
+        const role = user?.role;
 
         if (markAll) {
-            const user = await User.findById(userId).select('role');
-            const role = user?.role;
-            const query = { isRead: false };
-            if (role !== 'owner') {
-                query.$or = [
-                    { recipientId: userId },
-                    { isGlobal: true },
-                    { targetRole: role }
-                ];
-            }
-            await Notification.updateMany(query, { isRead: true });
-        } else if (Array.isArray(ids) && ids.length > 0) {
             await Notification.updateMany(
-                { _id: { $in: ids } },
+                { ...NotificationService.visibilityFilter(userId, role), isRead: false },
+                { isRead: true }
+            );
+        } else if (Array.isArray(ids) && ids.length > 0) {
+            // Scoped: a user can only mark notifications visible to them.
+            await Notification.updateMany(
+                { _id: { $in: ids }, ...NotificationService.visibilityFilter(userId, role) },
                 { isRead: true }
             );
         }
@@ -164,13 +153,12 @@ export class NotificationService {
         const user = await User.findById(userId).select('role');
         const role = user?.role;
 
-        const query = { _id: id };
-        if (role !== 'owner') {
-            query.recipientId = userId;
-        }
+        // Any user may delete a notification visible to them (their view);
+        // owner may delete anything. Recorded in api-deprecations.md.
+        const query = { _id: id, ...NotificationService.visibilityFilter(userId, role) };
 
         const notification = await Notification.findOneAndDelete(query);
-        if (!notification) throw 'Notification not found';
+        if (!notification) throw new NotFoundError('Notification not found');
         return { success: true };
     }
 
@@ -195,6 +183,73 @@ export class NotificationService {
     }
 
     /**
+     * T-PERF-04: batched creation — one dedupe read + one insertMany for the
+     * whole scanner sweep instead of (findOne + create) per item.
+     * Dedupe semantics match create(): title+scope within the time window.
+     */
+    static async createMany(specs, { deduplicationTimeWindow = 24 * 60 * 60 * 1000 } = {}) {
+        await dbConnect();
+        if (!specs || specs.length === 0) return [];
+
+        const titles = [...new Set(specs.map(s => s.title))];
+        const windowStart = new Date(Date.now() - deduplicationTimeWindow);
+        const existing = await Notification.find({
+            title: { $in: titles },
+            createdAt: { $gte: windowStart }
+        }).select('title recipientId targetRole isGlobal').lean();
+
+        const seen = new Set(existing.map(e =>
+            `${e.title}|${e.recipientId ?? ''}|${e.targetRole ?? ''}|${e.isGlobal ?? false}`
+        ));
+
+        const docs = [];
+        for (const spec of specs) {
+            const key = `${spec.title}|${spec.recipientId ?? ''}|${spec.targetRole ?? ''}|${spec.isGlobal ?? false}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            docs.push(this._buildSpec(spec));
+        }
+
+        if (docs.length === 0) return [];
+        return Notification.insertMany(docs, { ordered: false });
+    }
+
+    /**
+     * Map a spec object into a Notification document (shared by create/createMany).
+     */
+    static _buildSpec({
+        title,
+        message,
+        type = 'system',
+        severity = 'info',
+        source = 'System',
+        recipientId = null,
+        targetRole = null,
+        isGlobal = false,
+        link = null,
+        metadata = {},
+        category = null,
+        actionType = null,
+        actionParams = {}
+    }) {
+        if (category) metadata.category = category;
+        if (actionType) metadata.actionType = actionType;
+        if (Object.keys(actionParams).length > 0) metadata.actionParams = actionParams;
+        return {
+            title,
+            message,
+            type,
+            severity,
+            source,
+            recipientId,
+            targetRole,
+            isGlobal,
+            link,
+            metadata
+        };
+    }
+
+    /**
      * Legacy Scanner: Stock Alerts (Refactored)
      */
     static async syncStockAlerts(settings) {
@@ -208,9 +263,11 @@ export class NotificationService {
             ]
         });
 
+        // T-PERF-04: batched — collect specs, one dedupe read + insertMany
+        const specs = [];
         for (const product of products) {
             if (product.shopQty <= (product.minLevel || threshold)) {
-                await this.create({
+                specs.push({
                     title: `نقص في المحل: ${product.name}`,
                     message: `الكمية الحالية في المحل (${product.shopQty}) وصلت للحد الأدنى.`,
                     type: 'business',
@@ -218,13 +275,12 @@ export class NotificationService {
                     source: 'InventoryService',
                     targetRole: 'warehouse',
                     link: `/products/${product._id}`,
-                    deduplicationKey: `shop_low_${product._id}`,
                     metadata: { productId: product._id, location: 'shop' }
                 });
             }
 
             if (product.warehouseQty <= (product.minLevel || threshold)) {
-                await this.create({
+                specs.push({
                     title: `نقص في المخزن: ${product.name}`,
                     message: `الكمية الحالية في المخزن (${product.warehouseQty}) وصلت للحد الأدنى.`,
                     type: 'business',
@@ -232,11 +288,11 @@ export class NotificationService {
                     source: 'InventoryService',
                     targetRole: 'manager',
                     link: `/products/${product._id}`,
-                    deduplicationKey: `wh_low_${product._id}`,
                     metadata: { productId: product._id, location: 'warehouse' }
                 });
             }
         }
+        await this.createMany(specs);
     }
 
     /**
@@ -252,10 +308,11 @@ export class NotificationService {
             expectedDate: { $lte: targetDate, $gte: new Date() }
         }).populate('supplier', 'name financialTrackingEnabled');
 
+        const specs = [];
         for (const po of pendingPOs) {
             if (!po.supplier?.financialTrackingEnabled) continue;
 
-            await this.create({
+            specs.push({
                 title: `مستحق للمورد: ${po.supplier.name}`,
                 message: `طلب الشراء #${po.poNumber} بقيمة ${po.totalCost.toLocaleString()} ج.م يستحق خلال ${days} أيام.`,
                 type: 'business',
@@ -263,10 +320,10 @@ export class NotificationService {
                 source: 'PurchaseService',
                 targetRole: 'manager',
                 link: `/purchase-orders/${po._id}`,
-                deduplicationKey: `po_due_${po._id}`,
                 metadata: { poId: po._id, action: 'PAY_SUPPLIER' }
             });
         }
+        await this.createMany(specs);
     }
 
     /**
@@ -285,10 +342,10 @@ export class NotificationService {
             total: { $gte: minAmount }
         }).populate('customer', 'name');
 
+        const overdueSpecs = [];
         for (const inv of overdueInvoices) {
             const balance = inv.total - inv.paidAmount;
-
-            await this.create({
+            overdueSpecs.push({
                 title: `متأخرات سداد: ${inv.customer.name}`,
                 message: `الفاتورة #${inv.number} متأخرة بمبلغ ${balance.toLocaleString()} ج.م.`,
                 type: 'business',
@@ -296,10 +353,10 @@ export class NotificationService {
                 source: 'FinanceService',
                 targetRole: 'manager',
                 link: `/invoices/${inv._id}`,
-                deduplicationKey: `inv_overdue_${inv._id}`,
                 metadata: { invoiceId: inv._id, balance, action: 'COLLECT_DEBT', category: 'FINANCIAL' }
             });
         }
+        await this.createMany(overdueSpecs);
 
         // 2. Upcoming Collections (Control Period)
         const collectionDays = settings.customerCollectionAlertDays || 3;
@@ -313,19 +370,20 @@ export class NotificationService {
             total: { $gte: minAmount }
         }).populate('customer', 'name');
 
+        const upcomingSpecs = [];
         for (const inv of upcomingInvoices) {
             const balance = inv.total - inv.paidAmount;
-            await this.create({
+            upcomingSpecs.push({
                 title: `تحصيل قريب: ${inv.customer.name}`,
                 message: `الفاتورة #${inv.number} تستحق خلال ${collectionDays} أيام بقيمة ${balance.toLocaleString()} ج.م.`,
                 type: 'business',
                 severity: 'info',
                 targetRole: 'manager',
                 link: `/invoices/${inv._id}`,
-                deduplicationKey: `inv_due_soon_${inv._id}`,
                 metadata: { invoiceId: inv._id, balance, action: 'COLLECT_DEBT', category: 'FINANCIAL' }
             });
         }
+        await this.createMany(upcomingSpecs);
     }
 
     /**
@@ -341,7 +399,7 @@ export class NotificationService {
 
 
         const soonInstallments = await PaymentSchedule.find({
-            status: { $in: ['PENDING', 'OVERDUE'] },
+            status: { $in: ['pending', 'overdue'] },
             dueDate: { $lte: targetDate }
         }).populate({
             path: 'debtId',
@@ -349,6 +407,7 @@ export class NotificationService {
         });
 
 
+        const specs = [];
         for (const schedule of soonInstallments) {
             if (!schedule.debtId) {
                 continue;
@@ -359,14 +418,13 @@ export class NotificationService {
             const type = schedule.entityType === 'Customer' ? 'تحصيل' : 'سداد';
             const statusLabel = isOverdue ? 'متأخر' : 'قادم';
 
-            await this.create({
+            specs.push({
                 title: `${type} قسط ${statusLabel}: ${debtor?.name || 'مجهول'}`,
                 message: `قسط بقيمة ${schedule.amount.toLocaleString()} د.ل يستحق في ${schedule.dueDate.toLocaleDateString('ar-EG')}.`,
                 type: 'business',
                 severity: isOverdue ? 'critical' : 'info',
                 targetRole: 'manager',
                 link: `/financial/debt-center/${schedule.debtId._id}?autoPay=true`,
-                deduplicationKey: `schedule_${schedule._id}_${isOverdue ? 'overdue' : 'soon'}`,
                 metadata: {
                     debtId: schedule.debtId._id,
                     installmentId: schedule._id,
@@ -375,6 +433,7 @@ export class NotificationService {
                 }
             });
         }
+        await this.createMany(specs);
     }
 
     /**

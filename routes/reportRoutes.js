@@ -11,7 +11,7 @@ router.use(authMiddleware);
 // Consolidated dashboard endpoint - returns all data in one call
 router.get('/dashboard', routeHandler(async (req) => {
     // Use getUnifiedData which combines getKPIs, getStats, and getStrategy
-    return await DashboardService.getUnifiedData();
+    return await DashboardService.getUnifiedData(req.user?.role);
 }));
 
 router.get('/dashboard/stats', routeHandler(async (req) => {
@@ -19,7 +19,7 @@ router.get('/dashboard/stats', routeHandler(async (req) => {
 }));
 
 router.get('/dashboard/kpis', routeHandler(async (req) => {
-    return await DashboardService.getKPIs();
+    return await DashboardService.getKPIs(req.user?.role);
 }));
 
 router.get('/dashboard/strategy', routeHandler(async (req) => {

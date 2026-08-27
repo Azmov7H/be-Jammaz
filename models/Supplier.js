@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
 
 const SupplierSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    phone: String,
-    address: String,
+    name: { type: String, required: true, maxlength: 200 },
+    phone: { type: String, maxlength: 30 }, // T-DB-08
+    address: { type: String, maxlength: 500 },
     products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
 
     // Financials
@@ -24,4 +24,8 @@ const SupplierSchema = new mongoose.Schema({
 
 export default mongoose.models.Supplier || mongoose.model('Supplier', SupplierSchema);
 
-
+// T-DB-01
+SupplierSchema.index({ name: 1 });
+// T-DB-03: match Customer uniqueness semantics; sparse so blank phones coexist.
+SupplierSchema.index({ phone: 1 }, { unique: true, sparse: true });
+SupplierSchema.index({ isActive: 1 });

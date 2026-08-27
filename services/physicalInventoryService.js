@@ -1,12 +1,15 @@
 import PhysicalInventory from '../models/PhysicalInventory.js';
+import { parsePagination } from '../lib/paginate.js';
+import { withTransaction } from '../utils/dbUtils.js';
 import Product from '../models/Product.js';
 import { StockService } from './stockService.js';
 // import { AccountingService } from './accountingService.js';
 import { LogService } from './logService.js';
-import User from '../models/User.js';
+import { UserRepository } from '../repositories/userRepository.js';
 import bcrypt from 'bcryptjs';
 import dbConnect from '../lib/db.js';
 import mongoose from 'mongoose';
+import { NotFoundError, ConflictError, ForbiddenError } from '../lib/errors.js';
 
 /**
  * Physical Inventory Service
@@ -48,7 +51,7 @@ export const PhysicalInventoryService = {
                 productName: product.name,
                 productCode: product.code,
                 systemQty,
-                actualQty: !!isBlind ? 0 : systemQty, // [FIX] Zero if blind, else system qty
+                actualQty: isBlind ? 0 : systemQty, // [FIX] Zero if blind, else system qty
                 buyPrice: product.buyPrice
             };
         });
@@ -75,11 +78,11 @@ export const PhysicalInventoryService = {
         const count = await PhysicalInventory.findById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         if (count.status !== 'draft') {
-            throw new Error('لا يمكن تعديل جرد مكتمل');
+            throw new ConflictError('لا يمكن تعديل جرد مكتمل');
         }
 
         // Update actual quantities
@@ -119,7 +122,7 @@ export const PhysicalInventoryService = {
         const count = await PhysicalInventory.findById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         const discrepancies = count.items
@@ -149,23 +152,22 @@ export const PhysicalInventoryService = {
      */
     async completeCount(countId, userId) {
         await dbConnect();
-        // [MOD] Transaction Removed for Standalone Compatibility
-        // const session = await mongoose.startSession();
-        // session.startTransaction();
-
-        try {
-            const count = await PhysicalInventory.findById(countId).populate('items.productId'); // .session(session);
+        // T-BIZ-03: count completion + all per-item stock adjustments are
+        // atomic. Absolute sets inside the txn are safe against concurrent
+        // sales — write conflicts abort one side (documented per task).
+        return withTransaction(async (session) => {
+            const count = await PhysicalInventory.findById(countId).populate('items.productId').session(session);
 
             if (!count) {
-                throw new Error('سجل الجرد غير موجود');
+                throw new NotFoundError('سجل الجرد غير موجود');
             }
 
             if (count.status !== 'draft') {
-                throw new Error('الجرد مكتمل بالفعل');
+                throw new ConflictError('الجرد مكتمل بالفعل');
             }
 
             // Complete the count
-            await count.complete(userId); // session);
+            await count.complete(userId);
 
             // [NEW] Log Action
             await LogService.logAction({
@@ -175,14 +177,14 @@ export const PhysicalInventoryService = {
                 entityId: count._id,
                 diff: { valueImpact: count.valueImpact, netDifference: count.netDifference },
                 note: `Inventory count completed for ${count.location}`
-            }); // session);
+            }, { session });
 
             // Generate stock adjustments for discrepancies
             const adjustments = [];
 
             for (const item of count.items) {
                 if (item.difference !== 0) {
-                    const product = await Product.findById(item.productId); // .session(session);
+                    const product = await Product.findById(item.productId).session(session);
 
                     if (!product) continue;
 
@@ -215,36 +217,30 @@ export const PhysicalInventoryService = {
                         newWarehouseQty,
                         newShopQty,
                         `جرد فعلي - ${item.reason || 'تصحيح الكمية'}`,
-                        userId
+                        userId,
+                        session
                     ); // session);
 
                     adjustments.push(adjustment);
                 }
             }
 
-            // Create accounting entries - REMOVED (Accounting System Deprecated)
-            // await AccountingService.createInventoryAdjustmentEntries(count, userId); // session);
-
-            // await session.commitTransaction();
-
             return {
                 count,
                 adjustments,
                 totalAdjustments: adjustments.length
             };
-        } catch (error) {
-            // await session.abortTransaction();
-            throw error;
-        } finally {
-            // session.endSession();
-        }
+        });
     },
 
     /**
      * Get all physical counts with filters
      */
-    async getCounts({ location, status, startDate, endDate } = {}) {
+    async getCounts({ location, status, startDate, endDate, page, limit } = {}) {
         await dbConnect();
+
+        // T-PERF-01: bounded pagination
+        const { skip, limit: cappedLimit } = parsePagination({ page, limit });
 
         const query = {};
 
@@ -257,11 +253,17 @@ export const PhysicalInventoryService = {
             if (endDate) query.date.$lte = new Date(endDate);
         }
 
-        return await PhysicalInventory.find(query)
-            .sort({ date: -1 })
-            .populate('createdBy', 'name')
-            .populate('approvedBy', 'name')
-            .lean();
+        const [counts, total] = await Promise.all([
+            PhysicalInventory.find(query)
+                .sort({ date: -1 })
+                .skip(skip)
+                .limit(cappedLimit)
+                .populate('createdBy', 'name')
+                .populate('approvedBy', 'name')
+                .lean(),
+            PhysicalInventory.countDocuments(query)
+        ]);
+        return { counts, total, page: Math.max(1, parseInt(page, 10) || 1), limit: cappedLimit };
     },
 
     /**
@@ -270,11 +272,13 @@ export const PhysicalInventoryService = {
     async getCountById(countId) {
         await dbConnect();
 
-        return await PhysicalInventory.findById(countId)
+        const count = await PhysicalInventory.findById(countId)
             .populate('items.productId', 'name code')
             .populate('createdBy', 'name')
             .populate('approvedBy', 'name')
             .lean();
+        if (!count) throw new NotFoundError('سجل الجرد غير موجود');
+        return count;
     },
 
     /**
@@ -286,11 +290,11 @@ export const PhysicalInventoryService = {
         const count = await PhysicalInventory.findById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         if (count.status !== 'draft') {
-            throw new Error('لا يمكن حذف جرد مكتمل');
+            throw new ConflictError('لا يمكن حذف جرد مكتمل');
         }
 
         await PhysicalInventory.findByIdAndDelete(countId);
@@ -307,7 +311,7 @@ export const PhysicalInventoryService = {
         const count = await this.getCountById(countId);
 
         if (!count) {
-            throw new Error('سجل الجرد غير موجود');
+            throw new NotFoundError('سجل الجرد غير موجود');
         }
 
         const discrepancies = count.items.filter(item => item.difference !== 0);
@@ -349,16 +353,16 @@ export const PhysicalInventoryService = {
 
         try {
             const count = await PhysicalInventory.findById(countId); // .session(session);
-            if (!count) throw new Error('سجل الجرد غير موجود');
-            if (count.status !== 'completed') throw new Error('الجرد غير مكتمل بالفعل');
+            if (!count) throw new NotFoundError('سجل الجرد غير موجود');
+            if (count.status !== 'completed') throw new ConflictError('الجرد غير مكتمل بالفعل');
 
             // Find the owner user to verify password
-            const owner = await User.findOne({ role: 'owner' }); // .session(session);
-            if (!owner) throw new Error('لا يوجد مالك مسجل في النظام');
+            const owner = await UserRepository.findOwnerWithPassword(); // .session(session);
+            if (!owner) throw new NotFoundError('لا يوجد مالك مسجل في النظام');
 
             // Verify password
             const isValid = await bcrypt.compare(password, owner.password);
-            if (!isValid) throw new Error('كلمة المرور غير صحيحة');
+            if (!isValid) throw new ForbiddenError('كلمة المرور غير صحيحة');
 
             // Revert status to draft
             count.status = 'draft';

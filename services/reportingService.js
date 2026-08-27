@@ -209,7 +209,7 @@ export const ReportingService = {
         return await PaymentSchedule.aggregate([
             {
                 $match: {
-                    status: { $in: ['PENDING', 'OVERDUE'] }
+                    status: { $in: ['pending', 'overdue'] }
                 }
             },
             {

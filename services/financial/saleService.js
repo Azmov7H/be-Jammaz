@@ -10,6 +10,7 @@ import { LogService } from '../logService.js';
 import InvoiceSettings from '../../models/InvoiceSettings.js';
 import { withTransaction } from '../../utils/dbUtils.js';
 import mongoose from 'mongoose';
+import { NotFoundError } from '../../lib/errors.js';
 
 /**
  * Sale Service
@@ -93,7 +94,7 @@ export const SaleService = {
     async reverseSale(invoiceId, userId) {
         return await withTransaction(async (session) => {
             const invoice = await Invoice.findById(invoiceId).populate('items.productId').session(session);
-            if (!invoice) throw new Error('الفاتورة غير موجودة');
+            if (!invoice) throw new NotFoundError('الفاتورة غير موجودة');
 
             // 1. Reverse Stock
             const trackableItems = invoice.items.filter(item => !item.isService && item.productId);

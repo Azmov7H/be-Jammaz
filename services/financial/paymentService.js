@@ -1,8 +1,17 @@
 import dbConnect from '../../lib/db.js';
+import { withTransaction, withRetry } from '../../utils/dbUtils.js';
+
+// Sprint 05 fault-injection hook (tests only; unset in production)
+const faultInject = (point) => {
+    if (process.env.FAULT_INJECT === point) {
+        throw new Error(`[FAULT_INJECT] aborted at ${point}`);
+    }
+};
 import Invoice from '../../models/Invoice.js';
 import Customer from '../../models/Customer.js';
 import { TreasuryService } from '../treasuryService.js';
 import { DebtService } from './debtService.js';
+import { NotFoundError, BadRequestError } from '../../lib/errors.js';
 
 /**
  * Payment Service
@@ -12,14 +21,14 @@ export const PaymentService = {
     /**
      * Helper: Update schedules after a payment
      */
-    async updateSchedulesAfterPayment(entityId, entityType, amount) {
+    async updateSchedulesAfterPayment(entityId, entityType, amount, session = null) {
         const PaymentSchedule = (await import('../../models/PaymentSchedule.js')).default;
 
         const schedules = await PaymentSchedule.find({
             entityId,
             entityType,
-            status: { $in: ['PENDING', 'OVERDUE'] }
-        }).sort({ dueDate: 1 });
+            status: { $in: ['pending', 'overdue'] }
+        }).sort({ dueDate: 1 }).session(session);
 
         let remaining = amount;
 
@@ -29,13 +38,13 @@ export const PaymentService = {
             if (remaining >= schedule.amount) {
                 remaining -= schedule.amount;
                 schedule.amount = 0;
-                schedule.status = 'PAID';
+                schedule.status = 'paid';
                 schedule.paidAt = new Date();
-                await schedule.save();
+                await schedule.save({ session });
             } else {
                 schedule.amount -= remaining;
                 remaining = 0;
-                await schedule.save();
+                await schedule.save({ session });
             }
         }
     },
@@ -45,34 +54,35 @@ export const PaymentService = {
      */
     async recordCustomerPayment(invoice, amount, method, note, userId) {
         await dbConnect();
-        try {
-            await invoice.recordPayment(amount, method, note, userId);
+        // T-BIZ-01: all-or-nothing across invoice/debt/customer/treasury/cashbox
+        return withRetry(() => withTransaction(async (session) => {
+            await invoice.recordPayment(amount, method, note, userId, session);
+
+            faultInject('recordCustomerPayment:afterInvoice');
 
             if (invoice.customer) {
-                await this.updateSchedulesAfterPayment(invoice.customer, 'Customer', amount);
+                await this.updateSchedulesAfterPayment(invoice.customer, 'Customer', amount, session);
 
                 const Debt = (await import('../../models/Debt.js')).default;
-                const debt = await Debt.findOne({ referenceType: 'Invoice', referenceId: invoice._id });
+                const debt = await Debt.findOne({ referenceType: 'Invoice', referenceId: invoice._id }).session(session);
                 if (debt) {
-                    await DebtService.updateBalance(debt._id, amount);
+                    await DebtService.updateBalance(debt._id, amount, session);
                 } else {
-                    await Customer.findByIdAndUpdate(invoice.customer, { $inc: { balance: -amount } });
+                    await Customer.findByIdAndUpdate(invoice.customer, { $inc: { balance: -amount } }, { session });
                 }
             }
 
             let meta = {};
             if (invoice.customer) {
-                const updatedCustomer = await Customer.findById(invoice.customer);
+                const updatedCustomer = await Customer.findById(invoice.customer).session(session);
                 if (updatedCustomer) {
                     meta.customerBalanceAfter = updatedCustomer.balance;
                 }
             }
 
-            const tx = await TreasuryService.recordPaymentCollection(invoice, amount, userId, method, note, meta);
+            const tx = await TreasuryService.recordPaymentCollection(invoice, amount, userId, method, note, meta, session);
             return { invoice, transaction: tx };
-        } catch (error) {
-            throw error;
-        }
+        }));
     },
 
     /**
@@ -80,9 +90,10 @@ export const PaymentService = {
      */
     async recordTotalCustomerPayment(customerId, amount, method, note, userId) {
         await dbConnect();
-        try {
-            const customer = await Customer.findById(customerId);
-            if (!customer) throw new Error('العميل غير موجود');
+        // T-BIZ-01: unified collection — debt loop + credit + treasury in one txn
+        return withRetry(() => withTransaction(async (session) => {
+            const customer = await Customer.findById(customerId).session(session);
+            if (!customer) throw new NotFoundError('العميل غير موجود');
 
             const Debt = (await import('../../models/Debt.js')).default;
 
@@ -90,10 +101,10 @@ export const PaymentService = {
                 debtorId: customerId,
                 debtorType: 'Customer',
                 status: { $in: ['active', 'overdue'] }
-            }).sort({ dueDate: 1 });
+            }).sort({ dueDate: 1 }).session(session);
 
             if (activeDebts.length === 0 && customer.balance <= 0) {
-                throw new Error('لا توجد ديون مستحقة لهذا العميل');
+                throw new NotFoundError('لا توجد ديون مستحقة لهذا العميل');
             }
 
             let remainingAmount = amount;
@@ -104,20 +115,26 @@ export const PaymentService = {
 
                 const paymentToApply = Math.min(debt.remainingAmount, remainingAmount);
                 if (paymentToApply > 0) {
-                    await DebtService.updateBalance(debt._id, paymentToApply);
+                    faultInject('recordTotalCustomerPayment:midLoop');
+                    await DebtService.updateBalance(debt._id, paymentToApply, session);
 
                     if (debt.referenceType === 'Invoice') {
-                        const inv = await Invoice.findById(debt.referenceId);
-                        if (inv) {
-                            inv.paidAmount = (inv.paidAmount || 0) + paymentToApply;
-                            if (inv.paidAmount >= inv.total) {
-                                inv.paymentStatus = 'paid';
-                                inv.paidAmount = inv.total;
-                            } else {
-                                inv.paymentStatus = 'partial';
-                            }
-                            await inv.save();
-                        }
+                        // Atomic capped increment + status recompute (T-DB-06 primitive)
+                        await Invoice.findOneAndUpdate(
+                            { _id: debt.referenceId },
+                            [
+                                { $set: {
+                                    paidAmount: { $min: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, paymentToApply] }, '$total'] }
+                                } },
+                                { $set: {
+                                    paymentStatus: {
+                                        $cond: [{ $gte: ['$paidAmount', '$total'] }, 'paid',
+                                            { $cond: [{ $gt: ['$paidAmount', 0] }, 'partial', 'pending'] }]
+                                    }
+                                } }
+                            ],
+                            { session }
+                        );
                     }
 
                     remainingAmount -= paymentToApply;
@@ -130,16 +147,14 @@ export const PaymentService = {
             }
 
             if (remainingAmount > 0) {
-                // Determine model based purely on the expectation that this method handles Customers
-                // If we want to be strict, we can import Customer, but we already have it.
-                // Apply the remaining amount as a general credit (reducing the balance)
-                await Customer.findByIdAndUpdate(customerId, { $inc: { balance: -remainingAmount } });
+                // Remaining amount becomes a general credit (reducing the balance)
+                await Customer.findByIdAndUpdate(customerId, { $inc: { balance: -remainingAmount } }, { session });
             }
 
-            await this.updateSchedulesAfterPayment(customerId, 'Customer', amount);
+            await this.updateSchedulesAfterPayment(customerId, 'Customer', amount, session);
 
             // Refetch customer to get the accurate final balance
-            const finalCustomer = await Customer.findById(customerId);
+            const finalCustomer = await Customer.findById(customerId).session(session);
 
             const tx = await TreasuryService.recordUnifiedCollection(
                 customer,
@@ -150,13 +165,12 @@ export const PaymentService = {
                 {
                     customerBalanceAfter: finalCustomer ? finalCustomer.balance : customer.balance,
                     appliedPaymentsCount: appliedPayments.length
-                }
+                },
+                session
             );
 
             return { success: true, transaction: tx, appliedPayments };
-        } catch (error) {
-            throw error;
-        }
+        }));
     },
 
     /**
@@ -164,53 +178,70 @@ export const PaymentService = {
      */
     async recordSupplierPayment(po, amount, method, note, userId) {
         await dbConnect();
-        try {
-            po.paidAmount = (po.paidAmount || 0) + amount;
-            if (po.paidAmount >= po.totalCost) {
-                po.paymentStatus = 'paid';
-                po.paidAmount = po.totalCost;
-            } else {
-                po.paymentStatus = 'partial';
-            }
-            await po.save();
 
-            if (po.supplier) {
-                await this.updateSchedulesAfterPayment(po.supplier, 'Supplier', amount);
+        // FIX (Sprint 08): callers pass a bare PO id (frontend) or stub —
+        // resolve the real document first, otherwise _id reads undefined.
+        const PurchaseOrder = (await import('../../models/PurchaseOrder.js')).default;
+        const poDoc = await PurchaseOrder.findById(po?._id ?? po);
+        if (!poDoc) throw new NotFoundError('أمر الشراء غير موجود');
+
+        // T-BIZ-01: PO + debt/supplier + treasury in one txn
+        return withRetry(() => withTransaction(async (session) => {
+            const po = poDoc;
+            // Atomic capped increment on the PO (T-DB-06 primitive)
+            const updatedPo = await po.constructor.findOneAndUpdate(
+                { _id: po._id },
+                [
+                    { $set: {
+                        paidAmount: { $min: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, amount] }, '$totalCost'] }
+                    } },
+                    { $set: {
+                        paymentStatus: {
+                            $cond: [{ $gte: ['$paidAmount', '$totalCost'] }, 'paid',
+                                { $cond: [{ $gt: ['$paidAmount', 0] }, 'partial', '$paymentStatus'] }]
+                        }
+                    } }
+                ],
+                { new: true, session }
+            );
+            faultInject('recordSupplierPayment:afterPO');
+
+            if (updatedPo.supplier) {
+                await this.updateSchedulesAfterPayment(updatedPo.supplier, 'Supplier', amount, session);
 
                 const Debt = (await import('../../models/Debt.js')).default;
-                const debt = await Debt.findOne({ referenceType: 'PurchaseOrder', referenceId: po._id });
+                const debt = await Debt.findOne({ referenceType: 'PurchaseOrder', referenceId: updatedPo._id }).session(session);
                 if (debt) {
-                    await DebtService.updateBalance(debt._id, amount);
+                    await DebtService.updateBalance(debt._id, amount, session);
                 } else {
                     const Supplier = (await import('../../models/Supplier.js')).default;
-                    await Supplier.findByIdAndUpdate(po.supplier, { $inc: { balance: -amount } });
+                    await Supplier.findByIdAndUpdate(updatedPo.supplier, { $inc: { balance: -amount } }, { session });
                 }
             }
 
             let meta = {};
-            if (po.supplier) {
+            if (updatedPo.supplier) {
                 const Supplier = (await import('../../models/Supplier.js')).default;
-                const updatedSupplier = await Supplier.findById(po.supplier);
+                const updatedSupplier = await Supplier.findById(updatedPo.supplier).session(session);
                 if (updatedSupplier) {
                     meta.customerBalanceAfter = updatedSupplier.balance;
                 }
             }
 
             await TreasuryService.recordSupplierPayment(
-                po.supplier,
+                updatedPo.supplier,
                 amount,
-                po.poNumber,
-                po._id,
+                updatedPo.poNumber,
+                updatedPo._id,
                 userId,
                 method,
                 note,
-                meta
+                meta,
+                session
             );
 
-            return po;
-        } catch (error) {
-            throw error;
-        }
+            return updatedPo;
+        }));
     },
 
     /**
@@ -219,38 +250,52 @@ export const PaymentService = {
     async recordManualDebtPayment(debt, amount, method, note, userId) {
         await dbConnect();
 
-        if (debt.debtorType === 'Customer') {
-            await this.updateSchedulesAfterPayment(debt.debtorId, 'Customer', amount);
-        } else if (debt.debtorType === 'Supplier') {
-            await this.updateSchedulesAfterPayment(debt.debtorId, 'Supplier', amount);
-        }
+        // FIX (Sprint 08): callers send either a bare id string or a {_id}
+        // stub (frontend) — the old code read debtorType/_id off the stub, so
+        // schedule sync + partner-balance meta silently never ran, and bare
+        // ids 404'd. Resolve the real doc first.
+        const Debt = (await import('../../models/Debt.js')).default;
+        const debtDoc = await Debt.findById(debt?._id ?? debt);
+        if (!debtDoc) throw new NotFoundError('الدين غير موجود');
 
-        await DebtService.updateBalance(debt._id, amount);
+        // T-BIZ-01: manual debt payment all-or-nothing
+        return withRetry(() => withTransaction(async (session) => {
+            const debt = debtDoc;
+            if (debt.debtorType === 'Customer') {
+                await this.updateSchedulesAfterPayment(debt.debtorId, 'Customer', amount, session);
+            } else if (debt.debtorType === 'Supplier') {
+                await this.updateSchedulesAfterPayment(debt.debtorId, 'Supplier', amount, session);
+            }
 
-        let meta = {};
-        if (debt.debtorType === 'Customer') {
-            const updatedCustomer = await Customer.findById(debt.debtorId);
-            if (updatedCustomer) meta.customerBalanceAfter = updatedCustomer.balance;
-        } else if (debt.debtorType === 'Supplier') {
-            const Supplier = (await import('../../models/Supplier.js')).default;
-            const updatedSupplier = await Supplier.findById(debt.debtorId);
-            if (updatedSupplier) meta.customerBalanceAfter = updatedSupplier.balance;
-        }
+            faultInject('recordManualDebtPayment:afterSchedules');
+            await DebtService.updateBalance(debt._id, amount, session);
 
-        const tx = await TreasuryService.recordDebtTransaction(
-            debt._id,
-            debt.debtorId,
-            amount,
-            debt.debtorType === 'Customer' ? 'INCOME' : 'EXPENSE',
-            userId,
-            debt.debtorType === 'Customer'
-                ? `تحصيل مديونية سابقة: ${debt.description || ''} ${note ? `- ${note}` : ''}`
-                : `سداد مديونية سابقة للمورد: ${note ? `- ${note}` : ''}`,
-            method,
-            meta
-        );
+            let meta = {};
+            if (debt.debtorType === 'Customer') {
+                const updatedCustomer = await Customer.findById(debt.debtorId).session(session);
+                if (updatedCustomer) meta.customerBalanceAfter = updatedCustomer.balance;
+            } else if (debt.debtorType === 'Supplier') {
+                const Supplier = (await import('../../models/Supplier.js')).default;
+                const updatedSupplier = await Supplier.findById(debt.debtorId).session(session);
+                if (updatedSupplier) meta.customerBalanceAfter = updatedSupplier.balance;
+            }
 
-        return { debt, transaction: tx };
+            const tx = await TreasuryService.recordDebtTransaction(
+                debt._id,
+                debt.debtorId,
+                amount,
+                debt.debtorType === 'Customer' ? 'INCOME' : 'EXPENSE',
+                userId,
+                debt.debtorType === 'Customer'
+                    ? `تحصيل مديونية سابقة: ${debt.description || ''} ${note ? `- ${note}` : ''}`
+                    : `سداد مديونية سابقة للمورد: ${note ? `- ${note}` : ''}`,
+                method,
+                meta,
+                session
+            );
+
+            return { debt, transaction: tx };
+        }));
     },
 
     /**
@@ -261,7 +306,7 @@ export const PaymentService = {
         const { type, id, amount, method = 'cash', note = '' } = data;
 
         if (!type || !id || !amount || amount <= 0) {
-            throw 'بيانات غير صحيحة لسداد الدين';
+            throw new BadRequestError('بيانات غير صحيحة لسداد الدين');
         }
 
         if (type === 'receivable') {
@@ -275,7 +320,7 @@ export const PaymentService = {
                 if (debt) {
                     return await this.recordManualDebtPayment(debt, amount, method, note, userId);
                 } else {
-                    throw 'الفاتورة أو المديونية غير موجودة';
+                    throw new NotFoundError('الفاتورة أو المديونية غير موجودة');
                 }
             }
         } else if (type === 'payable') {
@@ -290,11 +335,11 @@ export const PaymentService = {
                 if (debt) {
                     return await this.recordManualDebtPayment(debt, amount, method, note, userId);
                 } else {
-                    throw 'أمر الشراء أو المديونية غير موجودة';
+                    throw new NotFoundError('أمر الشراء أو المديونية غير موجودة');
                 }
             }
         }
-        throw 'نوع عملية غير معروف';
+        throw new BadRequestError('نوع عملية غير معروف');
     }
 };
 

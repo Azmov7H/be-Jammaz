@@ -1,9 +1,12 @@
 import Product from '../models/Product.js';
+import { literalContains } from '../lib/safeRegex.js';
+import { boundedRange, MAX_LIMIT } from '../lib/paginate.js';
 import StockMovement from '../models/StockMovement.js';
 import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import dbConnect from '../lib/db.js';
 import { toIdString } from '../utils/idUtils.js';
+import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
 /**
  * Stock Management Service
@@ -26,58 +29,75 @@ export const StockService = {
         const movements = [];
         const results = [];
 
+        // T-DB-05: conditional atomic decrement — the DB enforces availability.
+        const decrements = []; // {productId, field, qty} for compensating $inc on failure
+
         for (const item of trackableItems) {
             const pid = toIdString(item.productId);
             const product = productMap.get(pid);
-            if (!product) throw new Error(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
+            if (!product) throw new NotFoundError(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
 
             const source = item.source || 'shop';
             const qty = Number(item.qty);
 
-            // 1. Validate & Update Quantities
-            if (source === 'warehouse') {
-                if (product.warehouseQty < qty) throw new Error(`الكمية غير كافية في المخزن: ${product.name}`);
-                product.warehouseQty -= qty;
-            } else {
-                if (product.shopQty < qty) throw new Error(`الكمية غير كافية في المتجر: ${product.name}`);
-                product.shopQty -= qty;
-            }
-            product.stockQty = (product.warehouseQty || 0) + (product.shopQty || 0);
-
-            // 2. Build Bulk Op
+            const guardField = source === 'warehouse' ? 'warehouseQty' : 'shopQty';
             bulkOps.push({
                 updateOne: {
-                    filter: { _id: product._id },
+                    filter: { _id: product._id, [guardField]: { $gte: qty } },
                     update: {
-                        $set: {
-                            warehouseQty: product.warehouseQty,
-                            shopQty: product.shopQty,
-                            stockQty: product.stockQty
-                        }
+                        $inc: source === 'warehouse'
+                            ? { warehouseQty: -qty, stockQty: -qty }
+                            : { shopQty: -qty, stockQty: -qty }
                     }
                 }
             });
 
-            // 3. Build Movement Log
             movements.push({
                 productId: product._id,
                 type: 'SALE',
                 qty: qty,
                 note: `بيع من ${source === 'warehouse' ? 'المخزن' : 'المحل'} - فاتورة #${invoiceId}`,
                 refId: invoiceId,
-                createdBy: userId,
-                snapshot: { warehouseQty: product.warehouseQty, shopQty: product.shopQty }
+                createdBy: userId
             });
 
-            results.push({ product });
+            decrements.push({ productId: product._id, guardField, qty, name: product.name });
         }
 
         if (bulkOps.length > 0) {
-            await Product.bulkWrite(bulkOps, { session });
+            const res = await Product.bulkWrite(bulkOps, { session, ordered: true });
+            if (res.modifiedCount !== bulkOps.length) {
+                // Compensate successful decrements, then fail loudly.
+                if (!session && res.modifiedCount > 0) {
+                    await Product.bulkWrite(decrements.slice(0, res.modifiedCount).map(d => ({
+                        updateOne: {
+                            filter: { _id: d.productId },
+                            update: { $inc: d.guardField === 'warehouseQty'
+                                ? { warehouseQty: d.qty, stockQty: d.qty }
+                                : { shopQty: d.qty, stockQty: d.qty } }
+                        }
+                    })));
+                }
+                const failed = decrements[res.modifiedCount];
+                throw new BadRequestError(
+                    failed
+                        ? `الكمية غير كافية في ${failed.guardField === 'warehouseQty' ? 'المخزن' : 'المتجر'}: ${failed.name}`
+                        : 'فشل تحديث المخزون'
+                );
+            }
+
+            // Movement ledger only after confirmed mutation; snapshots read back post-mutation.
+            const updated = await Product.find({ _id: { $in: trackableItems.map(i => i.productId) } })
+                .select('warehouseQty shopQty').session(session).lean();
+            const snapMap = new Map(updated.map(p => [String(p._id), p]));
+            for (const m of movements) {
+                const snap = snapMap.get(String(m.productId));
+                m.snapshot = snap ? { warehouseQty: snap.warehouseQty, shopQty: snap.shopQty } : {};
+            }
             await StockMovement.insertMany(movements, { session });
         }
 
-        return results;
+        return trackableItems.map(i => ({ product: productMap.get(toIdString(i.productId)) }));
     },
 
     /**
@@ -104,7 +124,7 @@ export const StockService = {
         for (const item of items) {
             const pid = toIdString(item.productId);
             const product = productMap.get(pid);
-            if (!product) throw new Error(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
+            if (!product) throw new NotFoundError(`المنتج غير موجود: ${JSON.stringify(item.productId)}`);
 
             const currentStock = product.stockQty || 0;
             const currentCost = product.buyPrice || 0;
@@ -117,24 +137,22 @@ export const StockService = {
                 newAvgCost = totalValue / (currentStock + newQty);
             }
 
-            // Update local state
-            product.warehouseQty = (product.warehouseQty || 0) + newQty;
-            product.stockQty = (product.warehouseQty || 0) + (product.shopQty || 0);
-            product.buyPrice = parseFloat(newAvgCost.toFixed(2));
-
-            // Add to bulk update operations
+            // T-DB-05: atomic quantity increment; AVCO cost is recomputed from
+            // the session read — inside a transaction concurrent receipts are
+            // serialized, outside it the window is a single statement.
+            const finalAvg = parseFloat(newAvgCost.toFixed(2));
             bulkOps.push({
                 updateOne: {
                     filter: { _id: product._id },
                     update: {
-                        $set: {
-                            warehouseQty: product.warehouseQty,
-                            stockQty: product.stockQty,
-                            buyPrice: product.buyPrice
-                        }
+                        $inc: { warehouseQty: newQty, stockQty: newQty },
+                        $set: { buyPrice: finalAvg }
                     }
                 }
             });
+            product.warehouseQty = (product.warehouseQty || 0) + newQty;
+            product.stockQty = (product.warehouseQty || 0) + (product.shopQty || 0);
+            product.buyPrice = finalAvg;
 
             // Prepare movement log
             movements.push({
@@ -169,21 +187,22 @@ export const StockService = {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
-        if (product.warehouseQty < quantity) {
-            throw new Error(
+        // T-DB-05: conditional atomic transfer
+        const updated = await Product.findOneAndUpdate(
+            { _id: productId, warehouseQty: { $gte: quantity } },
+            { $inc: { warehouseQty: -quantity, shopQty: quantity } },
+            { new: true, session }
+        );
+        if (!updated) {
+            throw new BadRequestError(
                 `كمية غير كافية في المخزن. المتوفر: ${product.warehouseQty}, المطلوب: ${quantity}`
             );
         }
 
-        // Transfer
-        product.warehouseQty -= quantity;
-        product.shopQty += quantity;
-        await product.save({ session });
-
-        // Log movement
+        // Log movement (after confirmed mutation)
         const movementDocs = await StockMovement.create([{
             productId,
             type: 'TRANSFER_TO_SHOP',
@@ -191,13 +210,13 @@ export const StockService = {
             note: note || 'تحويل من المخزن إلى المحل',
             createdBy: userId,
             snapshot: {
-                warehouseQty: product.warehouseQty,
-                shopQty: product.shopQty
+                warehouseQty: updated.warehouseQty,
+                shopQty: updated.shopQty
             }
         }], { session });
         const movement = movementDocs[0];
 
-        return { product, movement };
+        return { product: updated, movement };
     },
 
     /**
@@ -207,21 +226,22 @@ export const StockService = {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
-        if (product.shopQty < quantity) {
-            throw new Error(
+        // T-DB-05: conditional atomic transfer
+        const updated = await Product.findOneAndUpdate(
+            { _id: productId, shopQty: { $gte: quantity } },
+            { $inc: { shopQty: -quantity, warehouseQty: quantity } },
+            { new: true, session }
+        );
+        if (!updated) {
+            throw new BadRequestError(
                 `كمية غير كافية في المحل. المتوفر: ${product.shopQty}, المطلوب: ${quantity}`
             );
         }
 
-        // Transfer
-        product.shopQty -= quantity;
-        product.warehouseQty += quantity;
-        await product.save({ session });
-
-        // Log movement
+        // Log movement (after confirmed mutation)
         const movementDocs = await StockMovement.create([{
             productId,
             type: 'TRANSFER_TO_WAREHOUSE',
@@ -229,13 +249,13 @@ export const StockService = {
             note: note || 'تحويل من المحل إلى المخزن',
             createdBy: userId,
             snapshot: {
-                warehouseQty: product.warehouseQty,
-                shopQty: product.shopQty
+                warehouseQty: updated.warehouseQty,
+                shopQty: updated.shopQty
             }
         }], { session });
         const movement = movementDocs[0];
 
-        return { product, movement };
+        return { product: updated, movement };
     },
 
     /**
@@ -243,7 +263,7 @@ export const StockService = {
      */
     async registerInitialBalance(productId, warehouseQty, shopQty, buyPrice, userId, session = null) {
         const product = await Product.findById(productId).session(session);
-        if (!product) throw new Error('not found');
+        if (!product) throw new NotFoundError('not found');
 
         product.warehouseQty = warehouseQty;
         product.shopQty = shopQty;
@@ -278,7 +298,7 @@ export const StockService = {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
         const oldWarehouseQty = product.warehouseQty;
@@ -325,11 +345,50 @@ export const StockService = {
     /**
      * Get all stock movements for a date range
      */
+
+    /**
+     * List active products with stock projections.
+     * @param {{search?:string, lowStock?:boolean, outOfStock?:boolean}} filters
+     */
+    async listStock({ search, lowStock, outOfStock } = {}) {
+        const filter = { isActive: true };
+
+        if (search) {
+            filter.$or = [
+                { name: literalContains(search) },
+                { code: literalContains(search) }
+            ];
+        }
+
+        if (lowStock === true || lowStock === 'true') {
+            filter.$expr = { $lte: ['$stockQty', '$minLevel'] };
+        }
+
+        if (outOfStock === true || outOfStock === 'true') {
+            filter.stockQty = 0;
+        }
+
+        const products = await Product.find(filter)
+            .select('name code stockQty warehouseQty shopQty minLevel buyPrice retailPrice')
+            .sort({ name: 1 })
+            .limit(100)
+            .lean();
+
+        return { products, count: products.length };
+    },
+
+    /** Same as listStock with no filters */
+    async listStatus() {
+        return this.listStock();
+    },
+
     async getMovements(startDate, endDate, type = null) {
+        // T-PERF-01: bounded window (default 30d as before, max 90d)
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 90 });
         const query = {
             date: {
-                $gte: startDate,
-                $lte: endDate
+                $gte: range.startDate,
+                $lte: range.endDate
             }
         };
 
@@ -339,6 +398,7 @@ export const StockService = {
 
         return await StockMovement.find(query)
             .sort({ date: -1 })
+            .limit(MAX_LIMIT * 5) // hard safety net
             .populate('productId', 'name code')
             .populate('createdBy', 'name')
             .lean();
@@ -451,12 +511,13 @@ export const StockService = {
      */
     async moveStock({ productId, qty, type, userId, note, refId, isSystem = false }, session = null) {
         const quantity = Math.abs(Number(qty));
-        if (quantity === 0) throw new Error('Quantity must be greater than 0');
+        if (quantity === 0) throw new BadRequestError('Quantity must be greater than 0');
 
         const product = await Product.findById(productId).session(session);
-        if (!product) throw new Error('Product not found');
+        if (!product) throw new NotFoundError('Product not found');
 
-        let updateQuery = {};
+        let updateQuery;
+        let guard = null; // T-DB-05: conditional decrement guard
 
         switch (type) {
             case 'IN':
@@ -464,30 +525,22 @@ export const StockService = {
                 break;
 
             case 'OUT':
-                if (product.warehouseQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient warehouse stock. Available: ${product.warehouseQty}`);
-                }
+                guard = { warehouseQty: { $gte: quantity } };
                 updateQuery = { $inc: { warehouseQty: -quantity, stockQty: -quantity } };
                 break;
 
             case 'SALE':
-                if (product.shopQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient shop stock for sale. Available: ${product.shopQty}`);
-                }
+                guard = { shopQty: { $gte: quantity } };
                 updateQuery = { $inc: { shopQty: -quantity, stockQty: -quantity } };
                 break;
 
             case 'TRANSFER_TO_SHOP':
-                if (product.warehouseQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient warehouse stock for transfer. Available: ${product.warehouseQty}`);
-                }
+                guard = { warehouseQty: { $gte: quantity } };
                 updateQuery = { $inc: { warehouseQty: -quantity, shopQty: quantity } };
                 break;
 
             case 'TRANSFER_TO_WAREHOUSE':
-                if (product.shopQty < quantity && !isSystem) {
-                    throw new Error(`Insufficient shop stock for transfer. Available: ${product.shopQty}`);
-                }
+                guard = { shopQty: { $gte: quantity } };
                 updateQuery = { $inc: { shopQty: -quantity, warehouseQty: quantity } };
                 break;
 
@@ -500,10 +553,18 @@ export const StockService = {
                 break;
 
             default:
-                throw new Error('Invalid movement type');
+                throw new BadRequestError('Invalid movement type');
         }
 
-        const updatedProduct = await Product.findByIdAndUpdate(productId, updateQuery, { new: true, session });
+        // System moves skip guards (isSystem) — internal flows own their integrity.
+        const updatedProduct = await Product.findOneAndUpdate(
+            guard && !isSystem ? { _id: productId, ...guard } : { _id: productId },
+            updateQuery,
+            { new: true, session }
+        );
+        if (!updatedProduct) {
+            throw new BadRequestError(`Insufficient stock for ${type}. Requested: ${quantity}`);
+        }
 
         await StockMovement.create([{
             productId,
@@ -544,13 +605,14 @@ export const StockService = {
             const quantity = Math.abs(Number(item.qty));
             const activeType = item.type || type;
             let update = {};
+            let guardField = null; // T-DB-05: guarded decrements
 
             // Simplified logic for bulk moves
             if (activeType === 'IN') update = { $inc: { warehouseQty: quantity, stockQty: quantity } };
-            else if (activeType === 'OUT') update = { $inc: { warehouseQty: -quantity, stockQty: -quantity } };
-            else if (activeType === 'SALE') update = { $inc: { shopQty: -quantity, stockQty: -quantity } };
-            else if (activeType === 'TRANSFER_TO_SHOP') update = { $inc: { warehouseQty: -quantity, shopQty: quantity } };
-            else if (activeType === 'TRANSFER_TO_WAREHOUSE') update = { $inc: { shopQty: -quantity, warehouseQty: quantity } };
+            else if (activeType === 'OUT') { update = { $inc: { warehouseQty: -quantity, stockQty: -quantity } }; guardField = 'warehouseQty'; }
+            else if (activeType === 'SALE') { update = { $inc: { shopQty: -quantity, stockQty: -quantity } }; guardField = 'shopQty'; }
+            else if (activeType === 'TRANSFER_TO_SHOP') { update = { $inc: { warehouseQty: -quantity, shopQty: quantity } }; guardField = 'warehouseQty'; }
+            else if (activeType === 'TRANSFER_TO_WAREHOUSE') { update = { $inc: { shopQty: -quantity, warehouseQty: quantity } }; guardField = 'shopQty'; }
             else if (activeType === 'ADJUST') {
                 if (item.note && item.note.toLowerCase().includes('shop')) update = { $inc: { shopQty: quantity, stockQty: quantity } };
                 else update = { $inc: { warehouseQty: quantity, stockQty: quantity } };
@@ -558,8 +620,10 @@ export const StockService = {
 
             bulkOps.push({
                 updateOne: {
-                    filter: { _id: product._id },
-                    update: update
+                    filter: guardField
+                        ? { _id: product._id, [guardField]: { $gte: quantity } }
+                        : { _id: product._id },
+                    update
                 }
             });
 
@@ -579,8 +643,26 @@ export const StockService = {
         }
 
         if (bulkOps.length > 0) {
-            await Product.bulkWrite(bulkOps, { session });
-            await StockMovement.insertMany(movements, { session });
+            // T-DB-05: bulkWrite + post-check verification with compensating $inc
+            const res = await Product.bulkWrite(bulkOps, { session, ordered: true });
+            if (res.modifiedCount !== bulkOps.length && res.modifiedCount > 0) {
+                await Product.bulkWrite(bulkOps.slice(0, res.modifiedCount).map(op => ({
+                    updateOne: {
+                        filter: { _id: op.updateOne.filter._id },
+                        update: {
+                            $inc: Object.fromEntries(
+                                Object.entries(op.updateOne.update.$inc).map(([k, v]) => [k, -v])
+                            )
+                        }
+                    }
+                })), { session });
+            }
+            if (res.modifiedCount !== bulkOps.length) {
+                throw new BadRequestError(
+                    `فشل نقل دفعة من الأصناف: تم تحديث ${res.modifiedCount} من ${bulkOps.length}`
+                );
+            }
+            await StockMovement.insertMany(movements.slice(0, res.modifiedCount), { session });
         }
 
         return results;

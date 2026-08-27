@@ -3,6 +3,7 @@ import Customer from '../models/Customer.js';
 import PriceHistory from '../models/PriceHistory.js';
 import dbConnect from '../lib/db.js';
 import { toIdString } from '../utils/idUtils.js';
+import { NotFoundError } from '../lib/errors.js';
 
 /**
  * Pricing Service
@@ -18,7 +19,7 @@ export const PricingService = {
 
         const product = await Product.findById(productId);
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
         // If no customer, return retail price
@@ -62,7 +63,7 @@ export const PricingService = {
 
         const product = await Product.findById(productId);
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
         const changes = [];
@@ -144,12 +145,12 @@ export const PricingService = {
 
         const customer = await Customer.findById(customerId);
         if (!customer) {
-            throw new Error('العميل غير موجود');
+            throw new NotFoundError('العميل غير موجود');
         }
 
         const product = await Product.findById(productId);
         if (!product) {
-            throw new Error('المنتج غير موجود');
+            throw new NotFoundError('المنتج غير موجود');
         }
 
         // Check if custom price already exists
@@ -184,7 +185,7 @@ export const PricingService = {
 
         const customer = await Customer.findById(customerId);
         if (!customer) {
-            throw new Error('العميل غير موجود');
+            throw new NotFoundError('العميل غير موجود');
         }
 
         customer.customPricing = customer.customPricing.filter(
@@ -219,6 +220,22 @@ export const PricingService = {
     /**
      * Get all custom prices for a customer
      */
+    /**
+     * Customer pricing view for the frontend: flattened price rows.
+     */
+    async getCustomerPricingView(customerId) {
+        const prices = await this.getCustomerPricing(customerId);
+        return {
+            prices: prices.map(p => ({
+                productId: p.productId?._id || p.productId,
+                productName: p.productId?.name || 'منتج محذوف',
+                retailPrice: p.productId?.retailPrice || 0,
+                wholesalePrice: p.productId?.wholesalePrice || 0,
+                customPrice: p.customPrice
+            }))
+        };
+    },
+
     async getCustomerPricing(customerId) {
         await dbConnect();
 
@@ -228,7 +245,7 @@ export const PricingService = {
             .lean();
 
         if (!customer) {
-            throw new Error('العميل غير موجود');
+            throw new NotFoundError('العميل غير موجود');
         }
 
         return customer.customPricing || [];
