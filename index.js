@@ -199,6 +199,24 @@ app.get('/', (req, res) => {
     res.json({ message: 'Transfer ERP API is running' });
 });
 
+app.get('/api/health', async (req, res) => {
+    const checks = { api: 'ok', mongodb: 'unknown' };
+    try {
+        const state = mongoose.connection.readyState;
+        checks.mongodb = state === 1 ? 'ok' : 'disconnected';
+        checks.mongodbState = ['disconnected', 'connected', 'connecting', 'disconnecting'][state] || 'unknown';
+    } catch {
+        checks.mongodb = 'error';
+    }
+    const healthy = checks.api === 'ok' && checks.mongodb === 'ok';
+    res.status(healthy ? 200 : 503).json({
+        status: healthy ? 'healthy' : 'degraded',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        checks,
+    });
+});
+
 // Error Handler
 import { errorHandler } from './middlewares/errorHandler.js';
 app.use(errorHandler);

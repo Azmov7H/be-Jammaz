@@ -67,8 +67,30 @@ function isTransientTxnError(error) {
     return false;
 }
 
+function isTopologyUnsupportedError(error) {
+    let cur = error;
+    for (let i = 0; cur && i < 5; i++, cur = cur.cause ?? cur.parent) {
+        if (cur?.code === 20) return true; // IllegalOperation: Transaction numbers not supported
+    }
+    return false;
+}
+
 export async function withTransaction(fn) {
     await dbConnect();
+
+    // Check topology once: if transactions are unsupported, run non-atomically
+    // on every call (avoids re-detecting on every request).
+    if (!IS_PRODUCTION && ALLOW_NON_ATOMIC_DEV) {
+        try {
+            const session = await mongoose.startSession();
+            session.endSession();
+        } catch (error) {
+            if (isTopologyUnsupportedError(error)) {
+                logger.warn('[DB] NON-ATOMIC FALLBACK ACTIVE (ALLOW_NON_ATOMIC_DEV=true). Data integrity degraded.');
+                return fn(null);
+            }
+        }
+    }
 
     // Retry loop: each attempt gets a fresh session so an aborted txn's
     // writes can never leak into the next attempt.
@@ -109,6 +131,14 @@ export async function withTransaction(fn) {
             if (session) {
                 await session.abortTransaction().catch(() => {});
             }
+
+            // If the error is an unsupported-topology error and we're in dev
+            // with non-atomic allowed, fall back to running without session.
+            if (!IS_PRODUCTION && ALLOW_NON_ATOMIC_DEV && isTopologyUnsupportedError(error)) {
+                logger.warn('[DB] NON-ATOMIC FALLBACK ACTIVE (topology error mid-txn). Data integrity degraded.');
+                return fn(null);
+            }
+
             const retryable =
                 isTransientTxnError(error) &&
                 attempt < TRANSIENT_RETRY_LIMIT;

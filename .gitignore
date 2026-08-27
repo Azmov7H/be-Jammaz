@@ -43,6 +43,9 @@ next-env.d.ts
 # keep the example env template tracked
 !.env.example
 
+# production-local env (used by Docker, not committed with secrets)
+!.env.production-local
+
 # pnpm artifacts (npm is the package manager)
 pnpm-lock.yaml
 pnpm-workspace.yaml

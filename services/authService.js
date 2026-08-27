@@ -65,7 +65,7 @@ export const AuthService = {
             throw new UnauthorizedError('تم إلغاء الجلسة لأسباب أمنية، يرجى تسجيل الدخول');
         }
 
-        const user = await User.findById(stored.userId);
+        const user = await User.findById(stored.userId).select('+tokenVersion');
         if (!user || user.isActive === false) {
             throw new UnauthorizedError('الحساب غير متاح، يرجى تسجيل الدخول');
         }

@@ -3,9 +3,15 @@ import { verifyToken } from '../lib/auth.js';
 import { loginSchema } from '../validations/index.js';
 
 const isProd = process.env.NODE_ENV === 'production';
+// COOKIE_SECURE overrides the secure flag — set to "false" for local HTTP
+// development when NODE_ENV=production. In Docker with Nginx HTTPS (port 8443),
+// this can remain unset (defaults to isProd=true).
+const cookieSecure = process.env.COOKIE_SECURE !== undefined
+    ? process.env.COOKIE_SECURE === 'true'
+    : isProd;
 const baseCookie = {
     httpOnly: true,
-    secure: isProd,
+    secure: cookieSecure,
     sameSite: 'lax',
 };
 
