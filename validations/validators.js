@@ -174,7 +174,11 @@ export const customerSchema = z.object({
     paymentTerms: z.coerce.number().int().min(0).max(365).optional(),
     shippingCompany: z.string().max(200).optional(),
     openingBalance: money.optional(),
-    openingBalanceType: z.enum(['debit', 'credit']).optional()
+    openingBalanceType: z.enum(['debit', 'credit']).optional(),
+    // Customer ↔ Supplier unification (Sprint 7, FIN-VAL-004)
+    taxNumber: z.string().max(50).optional(),
+    isSupplier: z.boolean().optional(),
+    linkedSupplier: idField.optional().nullable()
 });
 
 export const supplierSchema = z.object({
@@ -187,7 +191,16 @@ export const supplierSchema = z.object({
     taxNumber: z.string().max(50).optional(),
     paymentTerms: z.coerce.number().int().min(0).max(365).default(0),
     openingBalance: money.optional(),
-    openingBalanceType: z.enum(['debit', 'credit']).optional()
+    openingBalanceType: z.enum(['debit', 'credit']).optional(),
+    // Customer ↔ Supplier unification (Sprint 7, FIN-VAL-004)
+    isCustomer: z.boolean().optional(),
+    linkedCustomer: idField.optional().nullable()
+});
+
+// Link schema (Sprint 7, FIN-VAL-005): a target entity id. Self-link is
+// prevented at the service layer (needs both ids to compare).
+export const linkSchema = z.object({
+    targetId: idField
 });
 
 // ---------------------------------------------------------------------------
