@@ -1,9 +1,10 @@
 import express from 'express';
 import { TreasuryService } from '../services/treasuryService.js';
+import { maskSourceInResult } from '../lib/pii.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate } from '../lib/validate.js';
-import { reconcileSchema, manualIncomeSchema, expenseSchema, sourceRequiredRefine } from '../validations/index.js';
+import { reconcileSchema, manualIncomeSchema, expenseSchema, sourceRequiredRefine, sourceNumberSchema } from '../validations/index.js';
 import { z } from 'zod';
 
 const router = express.Router();
@@ -18,7 +19,8 @@ router.get('/balance', routeHandler(async () => {
 // Get treasury summary (balance, income, expense)
 router.get('/summary', routeHandler(async (req) => {
     const { startDate, endDate } = req.query;
-    return await TreasuryService.getSummary(startDate, endDate);
+    const result = await TreasuryService.getSummary(startDate, endDate);
+    return maskSourceInResult(result, req.user.role);
 }));
 
 // Get daily cashbox
@@ -36,14 +38,15 @@ router.post('/reconcile', roleMiddleware(['owner', 'manager']), validate(reconci
 // Get transactions history
 router.get('/transactions', routeHandler(async (req) => {
     const { startDate, endDate, type, page, limit } = req.query;
-    return await TreasuryService.getTransactions(startDate, endDate, type, null, { page, limit });
+    const result = await TreasuryService.getTransactions(startDate, endDate, type, null, { page, limit });
+    return maskSourceInResult(result, req.user.role);
 }));
 
 // Add manual income
 const manualIncomeBody = sourceRequiredRefine(
     manualIncomeSchema.extend({
         method: z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay']).optional(),
-        sourceNumber: z.string().max(100).optional(),
+        sourceNumber: sourceNumberSchema,
     })
 );
 router.post('/manual-income', roleMiddleware(['owner', 'manager']), validate(manualIncomeBody), routeHandler(async (req) => {

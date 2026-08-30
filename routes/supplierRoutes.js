@@ -35,13 +35,13 @@ router.delete('/:id', validateParams(idParams),  roleMiddleware(['owner']), rout
 router.post('/:id/link-customer', validateParams(idParams), roleMiddleware(['owner', 'manager']),
     validate(linkSchema), routeHandler(async (req) => {
         const { PartyService } = await import('../services/partyService.js');
-        return await PartyService.link('Supplier', req.params.id, req.body.targetId);
+        return await PartyService.link('Supplier', req.params.id, req.body.targetId, req.user._id);
     }));
 
 router.delete('/:id/link-customer', validateParams(idParams), roleMiddleware(['owner', 'manager']),
     routeHandler(async (req) => {
         const { PartyService } = await import('../services/partyService.js');
-        return await PartyService.unlink('Supplier', req.params.id);
+        return await PartyService.unlink('Supplier', req.params.id, req.user._id);
     }));
 
 router.get('/:id/net-position', validateParams(idParams), routeHandler(async (req) => {

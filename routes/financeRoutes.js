@@ -3,12 +3,13 @@ import { FinanceService } from '../services/financeService.js';
 import { DebtService } from '../services/financial/debtService.js';
 import { TreasuryService } from '../services/treasuryService.js';
 import { routeHandler } from '../lib/route-handler.js';
+import { maskSourceInResult, maskDocSource } from '../lib/pii.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate, validateParams } from '../lib/validate.js';
 import {
     customerPaymentSchema, supplierPaymentSchema, debtPaymentSchema,
     counterpartyPaymentSchema, saleReturnSchema, expenseSchema,
-    installmentPlanSchema, treasuryTransactionSchema, idSchema,
+    installmentPlanSchema, treasuryTransactionSchema, idSchema, sourceNumberSchema,
 } from '../validations/index.js';
 import { z } from 'zod';
 
@@ -27,7 +28,7 @@ router.post('/payments/customer', validate(customerPaymentSchema), routeHandler(
 }));
 
 // Unified collection: manager+ (T-ACL-02)
-router.post('/payments/unified', roleMiddleware(['owner', 'manager']), validate(z.object({ customerId: idSchema, amount: money, method: method, note: note, sourceNumber: z.string().max(100).optional() })), routeHandler(async (req) => {
+router.post('/payments/unified', roleMiddleware(['owner', 'manager']), validate(z.object({ customerId: idSchema, amount: money, method: method, note: note, sourceNumber: sourceNumberSchema })), routeHandler(async (req) => {
     const { customerId, amount, method, note, sourceNumber } = req.body;
     return await FinanceService.recordTotalCustomerPayment(customerId, amount, method, note, req.user._id, sourceNumber);
 }));
@@ -107,17 +108,20 @@ router.post('/payments', roleMiddleware(['owner', 'manager']), validate(counterp
 
 // Get receipt by transaction ID
 router.get('/receipts/:id', routeHandler(async (req) => {
-    return await TreasuryService.buildReceipt(req.params.id);
+    const r = await TreasuryService.buildReceipt(req.params.id);
+    maskDocSource(r.transaction, req.user.role);
+    return r;
 }));
 
 // NEW: Get treasury summary for date range
 router.get('/treasury', routeHandler(async (req) => {
     const { startDate, endDate } = req.query;
-    return await TreasuryService.getSummary(startDate, endDate);
+    const result = await TreasuryService.getSummary(startDate, endDate);
+    return maskSourceInResult(result, req.user.role);
 }));
 
-// NEW: Record manual transaction
-router.post('/transaction', validate(treasuryTransactionSchema), routeHandler(async (req) => {
+// NEW: Record manual transaction (SEC-AUTH — same ACL as treasury manual routes)
+router.post('/transaction', roleMiddleware(['owner', 'manager']), validate(treasuryTransactionSchema), routeHandler(async (req) => {
     const { amount, description, type, category, date, method, sourceNumber } = req.body;
 
     if (type === 'INCOME') {
@@ -142,7 +146,8 @@ router.get('/daily', routeHandler(async (req) => {
 router.get('/partner/:id/transactions', routeHandler(async (req) => {
     const { id } = req.params;
     const { startDate, endDate, type, page, limit } = req.query;
-    return await TreasuryService.getTransactions(startDate, endDate, type, id, { page, limit });
+    const result = await TreasuryService.getTransactions(startDate, endDate, type, id, { page, limit });
+    return maskSourceInResult(result, req.user.role);
 }));
 
 export default router;

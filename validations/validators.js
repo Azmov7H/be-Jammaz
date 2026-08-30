@@ -25,6 +25,21 @@ export const paginationSchema = z.object({
 
 const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay']).optional();
 
+// Shared transfer-source schema (SEC-VAL-001). Hardened beyond Zod: trimmed,
+// length-bounded (max 200), and rejects control characters + path separators
+// (defense-in-depth against log/command injection via this free-text field).
+// Optional — the "required for instapay/wallet" rule is enforced separately by
+// sourceRequiredRefine so historical/new blank-value semantics stay intact.
+export const sourceNumberSchema = z
+    .string()
+    .trim()
+    .max(200, 'رقم التحويل طويل جدًا')
+    .refine(
+        (v) => ![...v].some((ch) => { const c = ch.codePointAt(0); return c < 32 || c === 127 || ch === '/' || ch === '\\'; }),
+        'رقم التحويل يحتوي أحرفًا غير صالحة'
+    )
+    .optional();
+
 // ---------------------------------------------------------------------------
 // Transfer-source validation (Sprint 3 — FIN-VAL-002/003, REQ-VAL-003/004)
 // ---------------------------------------------------------------------------
@@ -223,7 +238,7 @@ export const invoiceSchema = z.object({
     discount: money.optional(),
     notes: z.string().max(2000).optional(),
     paymentType: z.enum(['cash', 'credit', 'bank', 'wallet', 'check', 'instapay']).default('cash'),
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
     dueDate: dateField,
     shippingCompany: z.string().max(200).optional()
 }).refine(
@@ -252,7 +267,7 @@ export const purchaseOrderSchema = z.object({
     notes: z.string().max(2000).optional(),
     expectedDate: dateField,
     paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check', 'instapay']).default('cash'),
-    sourceNumber: z.string().max(100).optional()
+    sourceNumber: sourceNumberSchema
 }).superRefine((data, ctx) => {
     // FIN-VAL-003 (Sprint 3): PO via instapay/wallet requires a source number.
     if (sourceMissing(data.paymentType, data.sourceNumber)) {
@@ -286,7 +301,7 @@ export const customerPaymentSchema = sourceRequiredRefine(z.object({
     invoice: idField,
     amount: positiveMoney,
     method: paymentMethod,
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
     note: noteField,
 }));
 
@@ -296,7 +311,7 @@ export const counterpartyPaymentSchema = sourceRequiredRefine(z.object({
     debtId: idField.optional(),
     amount: positiveMoney,
     method: paymentMethod,
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
     note: noteField,
 }).refine(data => data.customerId || data.supplierId || data.debtId, {
     message: 'يجب تحديد العميل أو المورد أو الدين'
@@ -306,7 +321,7 @@ export const supplierPaymentSchema = sourceRequiredRefine(z.object({
     po: idField,
     amount: positiveMoney,
     method: paymentMethod,
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
     note: noteField,
 }));
 
@@ -314,7 +329,7 @@ export const debtPaymentSchema = sourceRequiredRefine(z.object({
     debt: idField,
     amount: positiveMoney,
     method: paymentMethod,
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
     note: noteField,
 }));
 
@@ -337,7 +352,7 @@ export const expenseSchema = sourceRequiredRefine(z.object({
     category: z.string().min(2, 'يجب اختيار التصنيف').max(100),
     date: dateField,
     method: paymentMethod,
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
 }));
 
 export const installmentPlanSchema = z.object({
@@ -356,7 +371,7 @@ export const treasuryTransactionSchema = sourceRequiredRefine(z.object({
     category: z.string().max(100).optional(),
     date: dateField,
     method: paymentMethod,
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
 }));
 
 export const manualIncomeSchema = z.object({

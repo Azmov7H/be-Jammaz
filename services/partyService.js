@@ -3,6 +3,7 @@ import Supplier from '../models/Supplier.js';
 import dbConnect from '../lib/db.js';
 import { withTransaction } from '../utils/dbUtils.js';
 import { NotFoundError, ConflictError, BadRequestError } from '../lib/errors.js';
+import { LogService } from './logService.js';
 
 /**
  * Customer ↔ Supplier unification (Sprint 7 — FIN-SVC-006, "Option B").
@@ -89,26 +90,40 @@ export const PartyService = {
      * @param {'Customer'|'Supplier'} sourceType Which record initiated the link.
      * @param {string} sourceId
      * @param {string} targetId The other-type record to link.
+     * @param {string} [actor] Authenticated user id (audit, SEC-AUD-001).
      */
-    async link(sourceType, sourceId, targetId) {
+    async link(sourceType, sourceId, targetId, actor) {
         await dbConnect();
         if (sourceType !== 'Customer' && sourceType !== 'Supplier') {
             throw new BadRequestError('نوع المصدر غير صالح');
         }
-        return withTransaction(async () => linkWithinTransaction(sourceType, sourceId, targetId));
+        const result = await withTransaction(async () => linkWithinTransaction(sourceType, sourceId, targetId));
+        if (actor) {
+            // SEC-AUD-001: audit party link (non-blocking; logAction catches errors).
+            await LogService.logAction({
+                userId: actor,
+                action: 'PARTY_LINK',
+                entity: 'Party',
+                entityId: result.target?._id?.toString?.() || targetId,
+                diff: { sourceType, sourceId, targetId, alreadyLinked: !!result.alreadyLinked },
+                note: `ربط ${sourceType} إلى ${result.target?._id?.toString?.() || targetId}`,
+            });
+        }
+        return result;
     },
 
     /**
      * Remove the Customer ↔ Supplier link (FIN-RTE-001).
      * @param {'Customer'|'Supplier'} sourceType
      * @param {string} sourceId
+     * @param {string} [actor] Authenticated user id (audit, SEC-AUD-001).
      */
-    async unlink(sourceType, sourceId) {
+    async unlink(sourceType, sourceId, actor) {
         await dbConnect();
         if (sourceType !== 'Customer' && sourceType !== 'Supplier') {
             throw new BadRequestError('نوع المصدر غير صالح');
         }
-        return withTransaction(async () => {
+        const result = await withTransaction(async () => {
             const source = sourceType === 'Customer'
                 ? await Customer.findById(sourceId)
                 : await Supplier.findById(sourceId);
@@ -139,8 +154,20 @@ export const PartyService = {
 
             await source.save();
             if (target) await target.save();
-            return { unlinked: true, alreadyUnlinked: false };
+            return { unlinked: true, alreadyUnlinked: false, targetId: other };
         });
+        if (actor) {
+            // SEC-AUD-001: audit party unlink (non-blocking).
+            await LogService.logAction({
+                userId: actor,
+                action: 'PARTY_UNLINK',
+                entity: 'Party',
+                entityId: sourceId,
+                diff: { sourceType, sourceId, targetId: result.targetId },
+                note: `فك ربط ${sourceType} من كيانه المرتبط`,
+            });
+        }
+        return result;
     },
 
     /**

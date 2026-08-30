@@ -1,5 +1,6 @@
 import express from 'express';
 import { PurchaseOrderService } from '../services/purchaseOrderService.js';
+import { maskSourceInResult, maskDocSource } from '../lib/pii.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate, validateParams } from '../lib/validate.js';
@@ -12,14 +13,16 @@ const router = express.Router();
 router.use(authMiddleware);
 
 router.get('/', routeHandler(async (req) => {
-    return await PurchaseOrderService.getAll({
+    const result = await PurchaseOrderService.getAll({
         limit: parseInt(req.query.limit) || 20,
         query: req.query.supplierId ? { supplier: req.query.supplierId } : {}
     });
+    return maskSourceInResult(result, req.user.role);
 }));
 
 router.get('/:id', routeHandler(async (req) => {
-    return await PurchaseOrderService.getById(req.params.id);
+    const result = await PurchaseOrderService.getById(req.params.id);
+    return maskDocSource(result, req.user.role);
 }));
 
 router.post('/', validate(purchaseOrderSchema), routeHandler(async (req) => {

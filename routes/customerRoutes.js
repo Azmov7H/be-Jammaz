@@ -4,7 +4,7 @@ import { PricingService } from '../services/pricingService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate, validateParams } from '../lib/validate.js';
-import { customerSchema, customPriceSchema, idSchema, sourceRequiredRefine, linkSchema } from '../validations/index.js';
+import { customerSchema, customPriceSchema, idSchema, sourceRequiredRefine, linkSchema, sourceNumberSchema } from '../validations/index.js';
 import { z } from 'zod';
 
 const router = express.Router();
@@ -13,7 +13,7 @@ const idParams = z.object({ id: idSchema });
 const payBody = sourceRequiredRefine(z.object({
     amount: z.coerce.number().positive().max(1e9),
     method: z.enum(['cash', 'bank', 'wallet', 'check', 'instapay']).optional(),
-    sourceNumber: z.string().max(100).optional(),
+    sourceNumber: sourceNumberSchema,
     note: z.string().max(500).optional(),
 }));
 
@@ -76,13 +76,13 @@ router.post('/:id/pay', validateParams(idParams), validate(payBody), routeHandle
 router.post('/:id/link-supplier', validateParams(idParams), roleMiddleware(['owner', 'manager']),
     validate(linkSchema), routeHandler(async (req) => {
         const { PartyService } = await import('../services/partyService.js');
-        return await PartyService.link('Customer', req.params.id, req.body.targetId);
+        return await PartyService.link('Customer', req.params.id, req.body.targetId, req.user._id);
     }));
 
 router.delete('/:id/link-supplier', validateParams(idParams), roleMiddleware(['owner', 'manager']),
     routeHandler(async (req) => {
         const { PartyService } = await import('../services/partyService.js');
-        return await PartyService.unlink('Customer', req.params.id);
+        return await PartyService.unlink('Customer', req.params.id, req.user._id);
     }));
 
 router.get('/:id/net-position', validateParams(idParams), routeHandler(async (req) => {
