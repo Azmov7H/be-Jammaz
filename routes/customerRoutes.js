@@ -4,7 +4,7 @@ import { PricingService } from '../services/pricingService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate, validateParams } from '../lib/validate.js';
-import { customerSchema, customPriceSchema, idSchema, sourceRequiredRefine } from '../validations/index.js';
+import { customerSchema, customPriceSchema, idSchema, sourceRequiredRefine, linkSchema } from '../validations/index.js';
 import { z } from 'zod';
 
 const router = express.Router();
@@ -70,6 +70,24 @@ router.post('/:id/pay', validateParams(idParams), validate(payBody), routeHandle
     const { FinanceService } = await import('../services/financeService.js');
     const { amount, method, note, sourceNumber } = req.body;
     return await FinanceService.recordTotalCustomerPayment(req.params.id, amount, method, note, req.user._id, sourceNumber);
+}));
+
+// Customer ↔ Supplier unification (Sprint 7, FIN-RTE-001)
+router.post('/:id/link-supplier', validateParams(idParams), roleMiddleware(['owner', 'manager']),
+    validate(linkSchema), routeHandler(async (req) => {
+        const { PartyService } = await import('../services/partyService.js');
+        return await PartyService.link('Customer', req.params.id, req.body.targetId);
+    }));
+
+router.delete('/:id/link-supplier', validateParams(idParams), roleMiddleware(['owner', 'manager']),
+    routeHandler(async (req) => {
+        const { PartyService } = await import('../services/partyService.js');
+        return await PartyService.unlink('Customer', req.params.id);
+    }));
+
+router.get('/:id/net-position', validateParams(idParams), routeHandler(async (req) => {
+    const { PartyService } = await import('../services/partyService.js');
+    return await PartyService.getNetPosition('Customer', req.params.id);
 }));
 
 export default router;
