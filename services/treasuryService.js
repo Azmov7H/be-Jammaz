@@ -8,6 +8,49 @@ import InvoiceSettings from '../models/InvoiceSettings.js';
 import Debt from '../models/Debt.js';
 import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
+// Sprint 2 (FIN-SVC-001): canonical method -> CashboxDaily field mapping.
+// Replaces the scattered inline ternaries everywhere so instapay (and any
+// future channel) is handled consistently. 'cash' is the default for any
+// unknown/legacy method.
+export const METHOD_INCOME_FIELD = {
+    cash: 'salesIncome',
+    bank: 'bankIncome',
+    wallet: 'walletIncome',
+    check: 'checkIncome',
+    instapay: 'instapayIncome',
+};
+export const METHOD_EXPENSE_FIELD = {
+    cash: 'purchaseExpenses',
+    bank: 'bankExpenses',
+    wallet: 'walletExpenses',
+    check: 'checkExpenses',
+    instapay: 'instapayExpenses',
+};
+
+/**
+ * Resolve the CashboxDaily aggregate field for a (method, type) pair.
+ * @param {string} method payment method (cash/bank/wallet/check/instapay/...)
+ * @param {'INCOME'|'EXPENSE'} type transaction direction
+ * @returns {string} the numeric CashboxDaily field to increment/decrement
+ */
+export function fieldFor(method, type) {
+    const map = type === 'INCOME' ? METHOD_INCOME_FIELD : METHOD_EXPENSE_FIELD;
+    return map[method] || map.cash;
+}
+
+/**
+ * Short label suffix used inside transaction descriptions (cosmetic).
+ */
+export function methodLabel(method) {
+    switch (method) {
+        case 'bank': return '(بنك)';
+        case 'wallet': return '(محفظة)';
+        case 'check': return '(شيك)';
+        case 'instapay': return '(انستا باي)';
+        default: return '';
+    }
+}
+
 /**
  * Treasury/Cashbox Management Service
  * Handles all financial transactions and daily cashbox operations
@@ -36,9 +79,7 @@ export const TreasuryService = {
         }], session);
 
         // Update daily cashbox based on method
-        const updateField = method === 'bank' ? 'bankIncome' :
-            method === 'wallet' ? 'walletIncome' :
-                method === 'check' ? 'checkIncome' : 'salesIncome';
+        const updateField = fieldFor(method, 'INCOME');
 
         await this.updateDailyCashbox(invoice.date || new Date(), {
             [updateField]: invoice.total
@@ -88,16 +129,14 @@ export const TreasuryService = {
      * @private
      */
     async _recordCollection({ amount, userId, method, note, meta, session, referenceType, referenceId, partnerId, description }) {
-        const methodLabel = method === 'bank' ? '(بنك)' :
-            method === 'wallet' ? '(محفظة)' :
-                method === 'check' ? '(شيك)' : '';
+        const methodLabelText = methodLabel(method);
         const receiptNumber = await this.getNextReceiptNumber(session);
 
         const transaction = await this._createTransactions([{
             type: 'INCOME',
             receiptNumber,
             amount: amount,
-            description: `${description} ${methodLabel} ${note ? `- ${note}` : ''}`,
+            description: `${description} ${methodLabelText} ${note ? `- ${note}` : ''}`,
             referenceType,
             referenceId,
             partnerId,
@@ -108,9 +147,7 @@ export const TreasuryService = {
         }], session);
 
         // Update daily cashbox based on method
-        const updateField = method === 'bank' ? 'bankIncome' :
-            method === 'wallet' ? 'walletIncome' :
-                method === 'check' ? 'checkIncome' : 'salesIncome';
+        const updateField = fieldFor(method, 'INCOME');
 
         await this.updateDailyCashbox(new Date(), { [updateField]: amount }, session);
 
@@ -146,16 +183,7 @@ export const TreasuryService = {
         const transaction = await this._createTransactions([debtTxDoc], session);
 
         // Update daily cashbox based on method
-        let updateField;
-        if (type === 'INCOME') {
-            updateField = method === 'bank' ? 'bankIncome' :
-                method === 'wallet' ? 'walletIncome' :
-                    method === 'check' ? 'checkIncome' : 'salesIncome';
-        } else {
-            updateField = method === 'bank' ? 'bankExpenses' :
-                method === 'wallet' ? 'walletExpenses' :
-                    method === 'check' ? 'checkExpenses' : 'purchaseExpenses';
-        }
+        const updateField = fieldFor(method, type);
 
         await this.updateDailyCashbox(new Date(), { [updateField]: amount }, session);
 
@@ -169,16 +197,14 @@ export const TreasuryService = {
         // Create treasury transaction
         // FIX (Sprint 08): 'credit' is not a valid TreasuryTransaction method —
         // coerce to cash (the movement itself only happens for non-credit POs).
-        const payMethod = ['bank', 'wallet', 'check'].includes(purchaseOrder.paymentType)
+        const payMethod = ['bank', 'wallet', 'check', 'instapay'].includes(purchaseOrder.paymentType)
             ? purchaseOrder.paymentType : 'cash';
-        const typeLabel = purchaseOrder.paymentType === 'wallet' ? '(محفظة)' :
-            purchaseOrder.paymentType === 'bank' ? '(بنك)' :
-                purchaseOrder.paymentType === 'check' ? '(شيك)' : '';
+        const typeLabelText = methodLabel(purchaseOrder.paymentType);
 
         const transaction = await this._createTransactions([{
             type: 'EXPENSE',
             amount: purchaseOrder.totalCost,
-            description: `مشتريات ${typeLabel} - أمر شراء #${purchaseOrder.poNumber} (المورد: ${purchaseOrder.supplier?.name || '---'})`,
+            description: `مشتريات ${typeLabelText} - أمر شراء #${purchaseOrder.poNumber} (المورد: ${purchaseOrder.supplier?.name || '---'})`,
             referenceType: 'PurchaseOrder',
             referenceId: purchaseOrder._id,
             partnerId: purchaseOrder.supplier,
@@ -189,9 +215,7 @@ export const TreasuryService = {
 
         // Update daily cashbox based on method
         const method = purchaseOrder.paymentType || 'cash';
-        const updateField = method === 'bank' ? 'bankExpenses' :
-            method === 'wallet' ? 'walletExpenses' :
-                method === 'check' ? 'checkExpenses' : 'purchaseExpenses';
+        const updateField = fieldFor(method, 'EXPENSE');
 
         await this.updateDailyCashbox(purchaseOrder.receivedDate || new Date(), {
             [updateField]: purchaseOrder.totalCost
@@ -204,13 +228,11 @@ export const TreasuryService = {
      * Record payment made to a supplier (Debt repayment)
      */
     async recordSupplierPayment(supplier, amount, poNumber, poId, userId, method = 'cash', note = '', meta = {}, session = null) {
-        const methodLabel = method === 'bank' ? '(بنك)' :
-            method === 'wallet' ? '(محفظة)' :
-                method === 'check' ? '(شيك)' : '';
+        const supplierMethodLabel = methodLabel(method);
         const transaction = await this._createTransactions([{
             type: 'EXPENSE',
             amount: amount,
-            description: `سداد للمورد: ${supplier?.name || '---'} - أمر #${poNumber} ${methodLabel} ${note ? `- ${note}` : ''}`,
+            description: `سداد للمورد: ${supplier?.name || '---'} - أمر #${poNumber} ${supplierMethodLabel} ${note ? `- ${note}` : ''}`,
             referenceType: 'PurchaseOrder',
             referenceId: poId,
             partnerId: supplier?._id || supplier,
@@ -221,9 +243,7 @@ export const TreasuryService = {
         }], session);
 
         // Update daily cashbox based on method
-        const updateField = method === 'bank' ? 'bankExpenses' :
-            method === 'wallet' ? 'walletExpenses' :
-                method === 'check' ? 'checkExpenses' : 'purchaseExpenses';
+        const updateField = fieldFor(method, 'EXPENSE');
 
         await this.updateDailyCashbox(new Date(), {
             [updateField]: amount
@@ -272,6 +292,7 @@ export const TreasuryService = {
             'bankIncome', 'bankExpenses',
             'walletIncome', 'walletExpenses',
             'checkIncome', 'checkExpenses',
+            'instapayIncome', 'instapayExpenses',
             'adjustment'
         ];
 
@@ -324,12 +345,11 @@ export const TreasuryService = {
             createdBy: userId
         }], session);
 
-        // If it's bank or wallet, we need to update the specific fields too
-        // (CashboxDaily.addIncome only increments manualIncome array and openingBalance in its own way?)
+        // If it's bank/wallet/check/instapay, we need to update the specific fields too
+        // (CashboxDaily.addIncome only increments manualIncome array in its own way?)
         // Wait, I should check CashboxDaily.addIncome implementation.
-        if (method !== 'cash') {
-            const updateField = method === 'bank' ? 'bankIncome' :
-                method === 'wallet' ? 'walletIncome' : 'checkIncome';
+        if (method !== 'cash' && method !== 'adjustment') {
+            const updateField = fieldFor(method, 'INCOME');
             await this.updateDailyCashbox(date, { [updateField]: amount }, session);
         }
 
@@ -370,9 +390,8 @@ export const TreasuryService = {
             createdBy: userId
         }], session);
 
-        if (method !== 'cash') {
-            const updateField = method === 'bank' ? 'bankExpenses' :
-                method === 'wallet' ? 'walletExpenses' : 'checkExpenses';
+        if (method !== 'cash' && method !== 'adjustment') {
+            const updateField = fieldFor(method, 'EXPENSE');
             await this.updateDailyCashbox(date, { [updateField]: amount }, session);
         }
 
@@ -385,9 +404,7 @@ export const TreasuryService = {
     async recordReturnRefund(salesReturn, amount, userId, session = null) {
         // Update daily cashbox based on method
         const method = salesReturn.refundMethod || 'cash';
-        const updateField = method === 'bank' ? 'bankIncome' :
-            method === 'wallet' ? 'walletIncome' :
-                method === 'check' ? 'checkIncome' : 'salesIncome';
+        const updateField = fieldFor(method, 'INCOME');
 
         await this.updateDailyCashbox(new Date(), {
             [updateField]: -amount // Negative income reflects a refund
@@ -629,8 +646,8 @@ export const TreasuryService = {
             }
         ]);
 
-        // Initialize breakdown
-        const breakdown = { cash: 0, bank: 0, wallet: 0, check: 0 };
+        // Initialize breakdown (instapay added in Sprint 2 — FIN-SVC-001)
+        const breakdown = { cash: 0, bank: 0, wallet: 0, check: 0, instapay: 0 };
 
         // Populate breakdown from aggregation
         for (const item of breakdownAgg) {
@@ -642,6 +659,8 @@ export const TreasuryService = {
                 breakdown.wallet = net;
             } else if (method === 'check') {
                 breakdown.check = net;
+            } else if (method === 'instapay') {
+                breakdown.instapay = net;
             } else {
                 breakdown.cash += net; // cash or null/undefined
             }
@@ -723,9 +742,7 @@ export const TreasuryService = {
 
             // Sync method fields
             if (transaction.method !== 'cash') {
-                const methodField = transaction.type === 'INCOME'
-                    ? (transaction.method === 'bank' ? 'bankIncome' : transaction.method === 'wallet' ? 'walletIncome' : 'checkIncome')
-                    : (transaction.method === 'bank' ? 'bankExpenses' : transaction.method === 'wallet' ? 'walletExpenses' : 'checkExpenses');
+                const methodField = fieldFor(transaction.method, transaction.type);
                 cashbox[methodField] -= transaction.amount;
             }
 
@@ -781,9 +798,7 @@ export const TreasuryService = {
 
                 // Sync method fields
                 if (transaction.method !== 'cash') {
-                    const methodField = transaction.type === 'INCOME'
-                        ? (transaction.method === 'bank' ? 'bankIncome' : transaction.method === 'wallet' ? 'walletIncome' : 'checkIncome')
-                        : (transaction.method === 'bank' ? 'bankExpenses' : transaction.method === 'wallet' ? 'walletExpenses' : 'checkExpenses');
+                    const methodField = fieldFor(transaction.method, transaction.type);
                     cashbox[methodField] -= transaction.amount;
                 }
             }
