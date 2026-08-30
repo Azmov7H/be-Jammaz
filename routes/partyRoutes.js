@@ -24,7 +24,7 @@ router.post('/link', roleMiddleware(['owner', 'manager']), validate(
     })
 ), routeHandler(async (req) => {
     const { sourceType, sourceId, targetId } = req.body;
-    return await PartyService.link(sourceType, sourceId, targetId);
+    return await PartyService.link(sourceType, sourceId, targetId, req.user._id);
 }));
 
 // Unlink a customer ↔ supplier.
@@ -32,7 +32,7 @@ router.post('/unlink', roleMiddleware(['owner', 'manager']), validate(
     z.object({ sourceType: z.enum(['Customer', 'Supplier']), sourceId: idSchema })
 ), routeHandler(async (req) => {
     const { sourceType, sourceId } = req.body;
-    return await PartyService.unlink(sourceType, sourceId);
+    return await PartyService.unlink(sourceType, sourceId, req.user._id);
 }));
 
 // Combined net position for an entity.

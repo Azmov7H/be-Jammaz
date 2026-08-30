@@ -27,7 +27,7 @@ const InvoiceSchema = new mongoose.Schema({
     },
     // Transfer-source identifier (e.g. InstaPay tx id). Optional; required on
     // entry for NEW instapay/wallet sales via Zod (Sprint 3, FIN-VAL-003).
-    sourceNumber: { type: String, maxlength: 100 },
+    sourceNumber: { type: String, maxlength: 200 },
     paymentStatus: {
         type: String,
         enum: ['paid', 'partial', 'pending'],
@@ -40,7 +40,7 @@ const InvoiceSchema = new mongoose.Schema({
         amount: { type: Number, required: true },
         date: { type: Date, default: Date.now },
         method: { type: String, enum: ['cash', 'bank', 'wallet', 'check', 'credit_balance', 'instapay'], default: 'cash' },
-        sourceNumber: { type: String, maxlength: 100 },
+        sourceNumber: { type: String, maxlength: 200 },
         note: String,
         recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
     }],

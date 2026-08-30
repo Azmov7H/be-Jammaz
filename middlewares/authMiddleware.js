@@ -3,7 +3,9 @@ import User from '../models/User.js';
 import { UnauthorizedError, ForbiddenError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 
-const AUTH_DEBUG = process.env.AUTH_DEBUG === 'true' || process.env.NODE_ENV !== 'test';
+// SEC-PII-002: debug logging OFF by default in production/test — it logs cookie
+// keys, token prefixes, and user ids. Only enable explicitly when diagnosing.
+const AUTH_DEBUG = process.env.AUTH_DEBUG === 'true' || process.env.NODE_ENV === 'development';
 
 function debugAuth(msg, data) {
     if (AUTH_DEBUG) {

@@ -50,7 +50,7 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     // Optional at the DB layer; required only for NEW instapay/wallet transactions via Zod (Sprint 3, FIN-VAL-002).
     sourceNumber: {
         type: String,
-        maxlength: 100,
+        maxlength: 200,
         index: true
     },
     createdBy: {
