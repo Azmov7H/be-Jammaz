@@ -27,6 +27,7 @@ import accountingRoutes from './routes/accountingRoutes.js';
 import pricingRoutes from './routes/pricingRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import partyRoutes from './routes/partyRoutes.js';
+import exportRoutes from './routes/exportRoutes.js';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
@@ -185,6 +186,7 @@ app.use('/api/pricing', pricingRoutes);
 app.use('/api/docs', docsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/parties', partyRoutes);
+app.use('/api/export', heavyLimiter, exportRoutes);
 
 
 
