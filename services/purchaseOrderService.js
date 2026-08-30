@@ -11,7 +11,7 @@ export const PurchaseOrderService = {
     async create(data, userId) {
         await dbConnect();
 
-        const { supplierId, items, notes, paymentType = 'cash' } = data;
+        const { supplierId, items, notes, paymentType = 'cash', sourceNumber } = data;
         let { expectedDate } = data;
 
         if (!expectedDate) {
@@ -39,26 +39,23 @@ export const PurchaseOrderService = {
             expectedDate,
             notes,
             paymentType,
+            sourceNumber,
             createdBy: userId
         });
 
         return po;
     },
 
-    async receive(id, paymentType, userId) {
+    async receive(id, paymentType, userId, sourceNumber) {
         await dbConnect();
         const po = await PurchaseOrder.findById(id).populate('items.productId');
         if (!po) throw new NotFoundError('PO not found');
         if (po.status === 'RECEIVED') throw new ConflictError('Already received');
 
-        // Finance & Stock Update (handled deep inside FinanceService based on previous route logic?)
-        // The previous route called `FinanceService.recordPurchaseReceive(po, userId, paymentType)`.
-        // This likely updates stock inside FinanceService OR StockService call. 
-        // Based on `StockService.increaseStockForPurchase` seen earlier, FinanceService probably calls that.
-
         // FIX (Sprint 08): fall back to the PO's own payment type — a bare
         // /receive call previously defaulted to 'cash' and paid the PO that
         // was created as credit.
+        if (sourceNumber != null) po.sourceNumber = sourceNumber;
         await FinanceService.recordPurchaseReceive(po, userId, paymentType || po.paymentType);
 
         return await PurchaseOrder.findById(id); // Return updated PO
@@ -85,7 +82,7 @@ export const PurchaseOrderService = {
         return po;
     },
 
-    async updateStatus(id, { status, paymentType }, userId) {
+    async updateStatus(id, { status, paymentType, sourceNumber }, userId) {
         await dbConnect();
 
         if (status === 'RECEIVED') {
@@ -95,6 +92,7 @@ export const PurchaseOrderService = {
             await withTransaction(async (session) => {
                 const po = await PurchaseOrder.findById(id).populate('items.productId').session(session);
                 if (!po) throw new NotFoundError('أمر الشراء غير موجود');
+                if (sourceNumber != null) po.sourceNumber = sourceNumber;
 
                 const result = await FinanceService.recordPurchaseReceive(
                     po, userId, paymentType || po.paymentType || 'cash', session

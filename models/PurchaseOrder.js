@@ -20,6 +20,7 @@ const PurchaseOrderSchema = new mongoose.Schema({
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     notes: String,
     paymentType: { type: String, enum: ['cash', 'credit', 'bank', 'wallet', 'check', 'instapay'], default: 'cash' },
+    sourceNumber: { type: String, maxlength: 100 },
     paidAmount: { type: Number, default: 0 },
     paymentStatus: {
         type: String,

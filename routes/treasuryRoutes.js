@@ -3,7 +3,8 @@ import { TreasuryService } from '../services/treasuryService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate } from '../lib/validate.js';
-import { reconcileSchema, manualIncomeSchema, expenseSchema } from '../validations/index.js';
+import { reconcileSchema, manualIncomeSchema, expenseSchema, sourceRequiredRefine } from '../validations/index.js';
+import { z } from 'zod';
 
 const router = express.Router();
 
@@ -39,15 +40,21 @@ router.get('/transactions', routeHandler(async (req) => {
 }));
 
 // Add manual income
-router.post('/manual-income', roleMiddleware(['owner', 'manager']), validate(manualIncomeSchema), routeHandler(async (req) => {
-    const { amount, reason, date } = req.body;
-    return await TreasuryService.addManualIncome(date || new Date(), amount, reason, req.user._id);
+const manualIncomeBody = sourceRequiredRefine(
+    manualIncomeSchema.extend({
+        method: z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay']).optional(),
+        sourceNumber: z.string().max(100).optional(),
+    })
+);
+router.post('/manual-income', roleMiddleware(['owner', 'manager']), validate(manualIncomeBody), routeHandler(async (req) => {
+    const { amount, reason, date, method, sourceNumber } = req.body;
+    return await TreasuryService.addManualIncome(date || new Date(), amount, reason, req.user._id, method || 'cash', null, sourceNumber);
 }));
 
 // Add manual expense
-router.post('/manual-expense', roleMiddleware(['owner', 'manager']), validate(expenseSchema.omit({ method: true })), routeHandler(async (req) => {
-    const { amount, reason, category, date } = req.body;
-    return await TreasuryService.addManualExpense(date || new Date(), amount, reason, category, req.user._id);
+router.post('/manual-expense', roleMiddleware(['owner', 'manager']), validate(expenseSchema), routeHandler(async (req) => {
+    const { amount, reason, category, date, method, sourceNumber } = req.body;
+    return await TreasuryService.addManualExpense(date || new Date(), amount, reason, category, req.user._id, method || 'cash', null, sourceNumber);
 }));
 
 // Undo a manual transaction

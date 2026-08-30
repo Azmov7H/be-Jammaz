@@ -52,7 +52,7 @@ export const PaymentService = {
     /**
      * Record a Payment Collection
      */
-    async recordCustomerPayment(invoice, amount, method, note, userId) {
+    async recordCustomerPayment(invoice, amount, method, note, userId, sourceNumber = '') {
         await dbConnect();
         // T-BIZ-01: all-or-nothing across invoice/debt/customer/treasury/cashbox
         return withRetry(() => withTransaction(async (session) => {
@@ -80,7 +80,7 @@ export const PaymentService = {
                 }
             }
 
-            const tx = await TreasuryService.recordPaymentCollection(invoice, amount, userId, method, note, meta, session);
+            const tx = await TreasuryService.recordPaymentCollection(invoice, amount, userId, method, note, meta, session, sourceNumber);
             return { invoice, transaction: tx };
         }));
     },
@@ -88,7 +88,7 @@ export const PaymentService = {
     /**
      * Record a Total Customer Payment (Unified Collection)
      */
-    async recordTotalCustomerPayment(customerId, amount, method, note, userId) {
+    async recordTotalCustomerPayment(customerId, amount, method, note, userId, sourceNumber = '') {
         await dbConnect();
         // T-BIZ-01: unified collection — debt loop + credit + treasury in one txn
         return withRetry(() => withTransaction(async (session) => {
@@ -166,7 +166,8 @@ export const PaymentService = {
                     customerBalanceAfter: finalCustomer ? finalCustomer.balance : customer.balance,
                     appliedPaymentsCount: appliedPayments.length
                 },
-                session
+                session,
+                sourceNumber
             );
 
             return { success: true, transaction: tx, appliedPayments };
@@ -176,7 +177,7 @@ export const PaymentService = {
     /**
      * Record a Supplier Payment (Paying debts)
      */
-    async recordSupplierPayment(po, amount, method, note, userId) {
+    async recordSupplierPayment(po, amount, method, note, userId, sourceNumber = '') {
         await dbConnect();
 
         // FIX (Sprint 08): callers pass a bare PO id (frontend) or stub —
@@ -237,7 +238,8 @@ export const PaymentService = {
                 method,
                 note,
                 meta,
-                session
+                session,
+                sourceNumber
             );
 
             return updatedPo;
@@ -247,7 +249,7 @@ export const PaymentService = {
     /**
      * Record payment for Manual Debt
      */
-    async recordManualDebtPayment(debt, amount, method, note, userId) {
+    async recordManualDebtPayment(debt, amount, method, note, userId, sourceNumber = '') {
         await dbConnect();
 
         // FIX (Sprint 08): callers send either a bare id string or a {_id}
@@ -291,7 +293,8 @@ export const PaymentService = {
                     : `سداد مديونية سابقة للمورد: ${note ? `- ${note}` : ''}`,
                 method,
                 meta,
-                session
+                session,
+                sourceNumber
             );
 
             return { debt, transaction: tx };
@@ -303,7 +306,7 @@ export const PaymentService = {
      */
     async settleDebt(data, userId) {
         await dbConnect();
-        const { type, id, amount, method = 'cash', note = '' } = data;
+        const { type, id, amount, method = 'cash', note = '', sourceNumber = '' } = data;
 
         if (!type || !id || !amount || amount <= 0) {
             throw new BadRequestError('بيانات غير صحيحة لسداد الدين');
@@ -312,13 +315,13 @@ export const PaymentService = {
         if (type === 'receivable') {
             const invoice = await Invoice.findById(id).populate('customer');
             if (invoice) {
-                return await this.recordCustomerPayment(invoice, amount, method, note, userId);
+                return await this.recordCustomerPayment(invoice, amount, method, note, userId, sourceNumber);
             } else {
                 const { default: Debt } = await import('../../models/Debt.js');
                 let debt = await Debt.findById(id);
                 if (!debt) debt = await Debt.findOne({ referenceId: id, debtorType: 'Customer' });
                 if (debt) {
-                    return await this.recordManualDebtPayment(debt, amount, method, note, userId);
+                    return await this.recordManualDebtPayment(debt, amount, method, note, userId, sourceNumber);
                 } else {
                     throw new NotFoundError('الفاتورة أو المديونية غير موجودة');
                 }
@@ -327,13 +330,13 @@ export const PaymentService = {
             const PurchaseOrder = (await import('../../models/PurchaseOrder.js')).default;
             const po = await PurchaseOrder.findById(id).populate('supplier');
             if (po) {
-                return await this.recordSupplierPayment(po, amount, method, note, userId);
+                return await this.recordSupplierPayment(po, amount, method, note, userId, sourceNumber);
             } else {
                 const Debt = (await import('../../models/Debt.js')).default;
                 let debt = await Debt.findById(id);
                 if (!debt) debt = await Debt.findOne({ referenceId: id, debtorType: 'Supplier' });
                 if (debt) {
-                    return await this.recordManualDebtPayment(debt, amount, method, note, userId);
+                    return await this.recordManualDebtPayment(debt, amount, method, note, userId, sourceNumber);
                 } else {
                     throw new NotFoundError('أمر الشراء أو المديونية غير موجودة');
                 }

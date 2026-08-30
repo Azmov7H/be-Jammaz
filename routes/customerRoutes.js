@@ -4,17 +4,18 @@ import { PricingService } from '../services/pricingService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate, validateParams } from '../lib/validate.js';
-import { customerSchema, customPriceSchema, idSchema } from '../validations/index.js';
+import { customerSchema, customPriceSchema, idSchema, sourceRequiredRefine } from '../validations/index.js';
 import { z } from 'zod';
 
 const router = express.Router();
 
 const idParams = z.object({ id: idSchema });
-const payBody = z.object({
+const payBody = sourceRequiredRefine(z.object({
     amount: z.coerce.number().positive().max(1e9),
-    method: z.enum(['cash', 'bank', 'wallet', 'check']).optional(),
+    method: z.enum(['cash', 'bank', 'wallet', 'check', 'instapay']).optional(),
+    sourceNumber: z.string().max(100).optional(),
     note: z.string().max(500).optional(),
-});
+}));
 
 // All customer routes require authentication
 router.use(authMiddleware);
@@ -67,8 +68,8 @@ router.get('/:id/statement', validateParams(idParams), routeHandler(async (req) 
 // Record customer payment (unified collection)
 router.post('/:id/pay', validateParams(idParams), validate(payBody), routeHandler(async (req) => {
     const { FinanceService } = await import('../services/financeService.js');
-    const { amount, method, note } = req.body;
-    return await FinanceService.recordTotalCustomerPayment(req.params.id, amount, method, note, req.user._id);
+    const { amount, method, note, sourceNumber } = req.body;
+    return await FinanceService.recordTotalCustomerPayment(req.params.id, amount, method, note, req.user._id, sourceNumber);
 }));
 
 export default router;

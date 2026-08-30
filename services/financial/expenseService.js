@@ -14,7 +14,7 @@ export const ExpenseService = {
     async recordExpense(data, userId) {
         await dbConnect();
         try {
-            const { amount, reason, category, date = new Date() } = data;
+            const { amount, reason, category, date = new Date(), method = 'cash', sourceNumber } = data;
 
             if (!amount || amount <= 0 || !reason || !category) {
                 throw new BadRequestError('بيانات المصروفات غير مكتملة');
@@ -26,7 +26,10 @@ export const ExpenseService = {
                 parseFloat(amount),
                 reason,
                 category,
-                userId
+                userId,
+                method,
+                null, // session
+                sourceNumber // FIN-SVC-003 (Sprint 3)
             );
 
             // 2. Logging
