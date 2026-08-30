@@ -42,22 +42,22 @@ export const FinanceService = {
     /**
      * Record a Payment Collection
      */
-    async recordCustomerPayment(invoice, amount, method, note, userId) {
-        return PaymentService.recordCustomerPayment(invoice, amount, method, note, userId);
+    async recordCustomerPayment(invoice, amount, method, note, userId, sourceNumber = '') {
+        return PaymentService.recordCustomerPayment(invoice, amount, method, note, userId, sourceNumber);
     },
 
     /**
      * Record a Total Customer Payment (Unified Collection)
      */
-    async recordTotalCustomerPayment(customerId, amount, method, note, userId) {
-        return PaymentService.recordTotalCustomerPayment(customerId, amount, method, note, userId);
+    async recordTotalCustomerPayment(customerId, amount, method, note, userId, sourceNumber = '') {
+        return PaymentService.recordTotalCustomerPayment(customerId, amount, method, note, userId, sourceNumber);
     },
 
     /**
      * Record a Supplier Payment (Paying debts)
      */
-    async recordSupplierPayment(po, amount, method, note, userId) {
-        return PaymentService.recordSupplierPayment(po, amount, method, note, userId);
+    async recordSupplierPayment(po, amount, method, note, userId, sourceNumber = '') {
+        return PaymentService.recordSupplierPayment(po, amount, method, note, userId, sourceNumber);
     },
 
     /**
@@ -77,8 +77,8 @@ export const FinanceService = {
     /**
      * Record payment for Manual Debt
      */
-    async recordManualDebtPayment(debt, amount, method, note, userId) {
-        return PaymentService.recordManualDebtPayment(debt, amount, method, note, userId);
+    async recordManualDebtPayment(debt, amount, method, note, userId, sourceNumber = '') {
+        return PaymentService.recordManualDebtPayment(debt, amount, method, note, userId, sourceNumber);
     },
 
     /**
@@ -92,21 +92,21 @@ export const FinanceService = {
      * Generic payments dispatcher: routes a payment to the right handler
      * based on which entity id is present (debt > supplier > customer).
      */
-    async resolvePayment({ debtId, supplierId, customerId, amount, method, note }, userId) {
+    async resolvePayment({ debtId, supplierId, customerId, amount, method, note, sourceNumber }, userId) {
         if (debtId) {
             const Debt = (await import('../models/Debt.js')).default;
             const debt = await Debt.findById(debtId);
             if (!debt) throw new NotFoundError('الدين غير موجود');
-            return this.recordManualDebtPayment(debt, amount, method, note, userId);
+            return this.recordManualDebtPayment(debt, amount, method, note, userId, sourceNumber);
         }
         if (supplierId) {
             const PurchaseOrder = (await import('../models/PurchaseOrder.js')).default;
             const po = await PurchaseOrder.findOne({ supplier: supplierId, status: 'RECEIVED', paymentStatus: { $ne: 'paid' } });
             if (!po) throw new NotFoundError('لا توجد طلبات شراء مستلمة غير مدفوعة');
-            return this.recordSupplierPayment(po, amount, method, note, userId);
+            return this.recordSupplierPayment(po, amount, method, note, userId, sourceNumber);
         }
         if (customerId) {
-            return this.recordTotalCustomerPayment(customerId, amount, method, note, userId);
+            return this.recordTotalCustomerPayment(customerId, amount, method, note, userId, sourceNumber);
         }
         throw new BadRequestError('يجب تحديد العميل أو المورد أو الدين');
     }

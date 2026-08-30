@@ -26,6 +26,50 @@ export const paginationSchema = z.object({
 const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay']).optional();
 
 // ---------------------------------------------------------------------------
+// Transfer-source validation (Sprint 3 — FIN-VAL-002/003, REQ-VAL-003/004)
+// ---------------------------------------------------------------------------
+// InstaPay & Cash Wallet payments MUST carry a sender/transfer identifier;
+// cash/bank/check/adjustment/credit do not. Historical rows (created before
+// this rule) are never re-validated, so only NEW transactions are affected.
+export const sourceRequiredMethods = ['instapay', 'wallet'];
+
+export const SOURCE_REQUIRED_MSG = 'رقم حساب التحويل مطلوب';
+
+/**
+ * True when the given method requires a non-blank sourceNumber.
+ * @param {string|undefined} method
+ * @returns {boolean}
+ */
+export function sourceRequired(method) {
+    return sourceRequiredMethods.includes(method);
+}
+
+/**
+ * True when a payload for `method` must be rejected for a missing/blank
+ * sourceNumber. Returns true only for new instapay/wallet with blank source.
+ */
+export function sourceMissing(method, sourceNumber) {
+    return sourceRequired(method) && !(sourceNumber != null && String(sourceNumber).trim() !== '');
+}
+
+/**
+ * Zod `superRefine` that rejects a payload when `method` ∈ {instapay, wallet}
+ * and `sourceNumber` is blank. Emits the issue at the `sourceNumber` path so
+ * the 400 `fieldErrors.sourceNumber` carries the Arabic message.
+ */
+export function sourceRequiredRefine(schema) {
+    return schema.superRefine((data, ctx) => {
+        if (sourceMissing(data.method, data.sourceNumber)) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['sourceNumber'],
+                message: SOURCE_REQUIRED_MSG,
+            });
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
 export const loginSchema = z.object({
@@ -175,7 +219,12 @@ export const invoiceSchema = z.object({
     {
         message: 'يجب تحديد عميل للمبيعات الآجلة أو إدخال اسم ورقم هاتف للعملاء الجدد'
     }
-);
+).superRefine((data, ctx) => {
+    // FIN-VAL-003 (Sprint 3): sale via instapay/wallet requires a source number.
+    if (sourceMissing(data.paymentType, data.sourceNumber)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceNumber'], message: SOURCE_REQUIRED_MSG });
+    }
+});
 
 // ---------------------------------------------------------------------------
 // Purchase orders
@@ -191,6 +240,11 @@ export const purchaseOrderSchema = z.object({
     expectedDate: dateField,
     paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check', 'instapay']).default('cash'),
     sourceNumber: z.string().max(100).optional()
+}).superRefine((data, ctx) => {
+    // FIN-VAL-003 (Sprint 3): PO via instapay/wallet requires a source number.
+    if (sourceMissing(data.paymentType, data.sourceNumber)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceNumber'], message: SOURCE_REQUIRED_MSG });
+    }
 });
 
 export const poStatusSchema = z.object({
@@ -215,15 +269,15 @@ export const poReceiveSchema = z.object({
 // ---------------------------------------------------------------------------
 const noteField = z.string().max(500).optional();
 
-export const customerPaymentSchema = z.object({
+export const customerPaymentSchema = sourceRequiredRefine(z.object({
     invoice: idField,
     amount: positiveMoney,
     method: paymentMethod,
     sourceNumber: z.string().max(100).optional(),
     note: noteField,
-});
+}));
 
-export const counterpartyPaymentSchema = z.object({
+export const counterpartyPaymentSchema = sourceRequiredRefine(z.object({
     customerId: idField.optional(),
     supplierId: idField.optional(),
     debtId: idField.optional(),
@@ -233,23 +287,23 @@ export const counterpartyPaymentSchema = z.object({
     note: noteField,
 }).refine(data => data.customerId || data.supplierId || data.debtId, {
     message: 'يجب تحديد العميل أو المورد أو الدين'
-});
+}));
 
-export const supplierPaymentSchema = z.object({
+export const supplierPaymentSchema = sourceRequiredRefine(z.object({
     po: idField,
     amount: positiveMoney,
     method: paymentMethod,
     sourceNumber: z.string().max(100).optional(),
     note: noteField,
-});
+}));
 
-export const debtPaymentSchema = z.object({
+export const debtPaymentSchema = sourceRequiredRefine(z.object({
     debt: idField,
     amount: positiveMoney,
     method: paymentMethod,
     sourceNumber: z.string().max(100).optional(),
     note: noteField,
-});
+}));
 
 export const saleReturnSchema = z.object({
     invoice: idField,
@@ -264,14 +318,14 @@ export const saleReturnSchema = z.object({
     refundMethod: z.string().max(30).optional(),
 });
 
-export const expenseSchema = z.object({
+export const expenseSchema = sourceRequiredRefine(z.object({
     amount: positiveMoney,
     reason: z.string().min(2, 'يجب ذكر سبب المصروف').max(500),
     category: z.string().min(2, 'يجب اختيار التصنيف').max(100),
     date: dateField,
     method: paymentMethod,
     sourceNumber: z.string().max(100).optional(),
-});
+}));
 
 export const installmentPlanSchema = z.object({
     installmentsCount: z.coerce.number().int().min(1).max(60),
@@ -282,14 +336,15 @@ export const installmentPlanSchema = z.object({
 // ---------------------------------------------------------------------------
 // Treasury & GL
 // ---------------------------------------------------------------------------
-export const treasuryTransactionSchema = z.object({
+export const treasuryTransactionSchema = sourceRequiredRefine(z.object({
     amount: positiveMoney,
     description: z.string().min(2, 'الوصف مطلوب').max(500),
     type: z.enum(['INCOME', 'EXPENSE']),
     category: z.string().max(100).optional(),
     date: dateField,
     method: paymentMethod,
-});
+    sourceNumber: z.string().max(100).optional(),
+}));
 
 export const manualIncomeSchema = z.object({
     amount: positiveMoney,

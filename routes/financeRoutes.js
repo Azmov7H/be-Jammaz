@@ -22,26 +22,26 @@ router.use(authMiddleware);
 
 // Record a customer payment
 router.post('/payments/customer', validate(customerPaymentSchema), routeHandler(async (req) => {
-    const { invoice, amount, method, note } = req.body;
-    return await FinanceService.recordCustomerPayment(invoice, amount, method, note, req.user._id);
+    const { invoice, amount, method, note, sourceNumber } = req.body;
+    return await FinanceService.recordCustomerPayment(invoice, amount, method, note, req.user._id, sourceNumber);
 }));
 
 // Unified collection: manager+ (T-ACL-02)
-router.post('/payments/unified', roleMiddleware(['owner', 'manager']), validate(z.object({ customerId: idSchema, amount: money, method: method, note: note })), routeHandler(async (req) => {
-    const { customerId, amount, method, note } = req.body;
-    return await FinanceService.recordTotalCustomerPayment(customerId, amount, method, note, req.user._id);
+router.post('/payments/unified', roleMiddleware(['owner', 'manager']), validate(z.object({ customerId: idSchema, amount: money, method: method, note: note, sourceNumber: z.string().max(100).optional() })), routeHandler(async (req) => {
+    const { customerId, amount, method, note, sourceNumber } = req.body;
+    return await FinanceService.recordTotalCustomerPayment(customerId, amount, method, note, req.user._id, sourceNumber);
 }));
 
 // Supplier payment: manager+ (T-ACL-02)
 router.post('/payments/supplier', roleMiddleware(['owner', 'manager']), validate(supplierPaymentSchema), routeHandler(async (req) => {
-    const { po, amount, method, note } = req.body;
-    return await FinanceService.recordSupplierPayment(po, amount, method, note, req.user._id);
+    const { po, amount, method, note, sourceNumber } = req.body;
+    return await FinanceService.recordSupplierPayment(po, amount, method, note, req.user._id, sourceNumber);
 }));
 
 // Manual debt payment: manager+ (T-ACL-02)
 router.post('/payments/debt', roleMiddleware(['owner', 'manager']), validate(debtPaymentSchema), routeHandler(async (req) => {
-    const { debt, amount, method, note } = req.body;
-    return await FinanceService.recordManualDebtPayment(debt, amount, method, note, req.user._id);
+    const { debt, amount, method, note, sourceNumber } = req.body;
+    return await FinanceService.recordManualDebtPayment(debt, amount, method, note, req.user._id, sourceNumber);
 }));
 
 // Process a sales return
@@ -101,8 +101,8 @@ router.get('/installments/:debtId', deprecated, routeHandler(async (req) => {
 
 // Dispatcher: manager+ (can reach supplier/unified paths; cashiers use /payments/customer) [T-ACL-02]
 router.post('/payments', roleMiddleware(['owner', 'manager']), validate(counterpartyPaymentSchema), routeHandler(async (req) => {
-    const { customerId, supplierId, debtId, amount, method, note } = req.body;
-    return await FinanceService.resolvePayment({ customerId, supplierId, debtId, amount, method, note }, req.user._id);
+    const { customerId, supplierId, debtId, amount, method, note, sourceNumber } = req.body;
+    return await FinanceService.resolvePayment({ customerId, supplierId, debtId, amount, method, note, sourceNumber }, req.user._id);
 }));
 
 // Get receipt by transaction ID
@@ -118,12 +118,12 @@ router.get('/treasury', routeHandler(async (req) => {
 
 // NEW: Record manual transaction
 router.post('/transaction', validate(treasuryTransactionSchema), routeHandler(async (req) => {
-    const { amount, description, type, category, date, method } = req.body;
+    const { amount, description, type, category, date, method, sourceNumber } = req.body;
 
     if (type === 'INCOME') {
-        return await TreasuryService.addManualIncome(date || new Date(), amount, description, req.user._id, method || 'cash');
+        return await TreasuryService.addManualIncome(date || new Date(), amount, description, req.user._id, method || 'cash', null, sourceNumber);
     } else {
-        return await TreasuryService.addManualExpense(date || new Date(), amount, description, category || 'other', req.user._id, method || 'cash');
+        return await TreasuryService.addManualExpense(date || new Date(), amount, description, category || 'other', req.user._id, method || 'cash', null, sourceNumber);
     }
 }));
 

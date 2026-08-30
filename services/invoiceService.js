@@ -48,7 +48,7 @@ export const InvoiceService = {
 
     async create(data, userId) {
         return await withTransaction(async (session) => {
-            const { items, customerId, customerName, customerPhone, paymentType, tax = 0, dueDate, notes } = data;
+            const { items, customerId, customerName, customerPhone, paymentType, tax = 0, dueDate, notes, sourceNumber } = data;
 
             // 1. Calculate Totals & Validate Products
             const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, session);
@@ -67,6 +67,7 @@ export const InvoiceService = {
                 tax,
                 total,
                 paymentType,
+                sourceNumber,
                 dueDate,
                 totalCost,
                 profit,

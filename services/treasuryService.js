@@ -52,6 +52,17 @@ export function methodLabel(method) {
 }
 
 /**
+ * Mask a transfer source number for display (PII-friendly). Keeps the last 2
+ * digits (e.g. `123****78`); empty/undefined values pass through unchanged.
+ */
+export function maskSource(sourceNumber) {
+    if (sourceNumber == null || String(sourceNumber).trim() === '') return '';
+    const s = String(sourceNumber).trim();
+    if (s.length <= 4) return '****';
+    return `${s.slice(0, 3)}****${s.slice(-2)}`;
+}
+
+/**
  * Treasury/Cashbox Management Service
  * Handles all financial transactions and daily cashbox operations
  */
@@ -75,6 +86,7 @@ export const TreasuryService = {
             partnerId: invoice.customer || invoice.customerId,
             date: invoice.date || new Date(),
             method: method,
+            sourceNumber: invoice.sourceNumber, // FIN-SVC-004 (Sprint 3)
             createdBy: userId
         }], session);
 
@@ -91,7 +103,7 @@ export const TreasuryService = {
     /**
      * Record collection of a payment for an invoice (Debt repayment)
      */
-    async recordPaymentCollection(invoice, amount, userId, method = 'cash', note = '', meta = {}, session = null) {
+    async recordPaymentCollection(invoice, amount, userId, method = 'cash', note = '', meta = {}, session = null, sourceNumber = '') {
         return this._recordCollection({
             amount,
             userId,
@@ -102,14 +114,15 @@ export const TreasuryService = {
             referenceType: 'Invoice',
             referenceId: invoice._id,
             partnerId: invoice.customer || invoice.customerId,
-            description: `تحصيل دفعة - فاتورة #${invoice.number} - العميل: ${invoice.customer?.name || invoice.customerName || ''}`
+            description: `تحصيل دفعة - فاتورة #${invoice.number} - العميل: ${invoice.customer?.name || invoice.customerName || ''}`,
+            sourceNumber
         });
     },
 
     /**
      * Record Unified Collection (Payment against total balance)
      */
-    async recordUnifiedCollection(customer, amount, userId, method = 'cash', note = '', meta = {}, session = null) {
+    async recordUnifiedCollection(customer, amount, userId, method = 'cash', note = '', meta = {}, session = null, sourceNumber = '') {
         return this._recordCollection({
             amount,
             userId,
@@ -120,7 +133,8 @@ export const TreasuryService = {
             referenceType: 'UnifiedCollection',
             referenceId: customer._id,
             partnerId: customer._id,
-            description: `تحصيل مجمع - ${customer.name}`
+            description: `تحصيل مجمع - ${customer.name}`,
+            sourceNumber
         });
     },
 
@@ -128,7 +142,7 @@ export const TreasuryService = {
      * Generic helper for recording collections (Internal)
      * @private
      */
-    async _recordCollection({ amount, userId, method, note, meta, session, referenceType, referenceId, partnerId, description }) {
+    async _recordCollection({ amount, userId, method, note, meta, session, referenceType, referenceId, partnerId, description, sourceNumber = '' }) {
         const methodLabelText = methodLabel(method);
         const receiptNumber = await this.getNextReceiptNumber(session);
 
@@ -143,6 +157,7 @@ export const TreasuryService = {
             date: new Date(),
             createdBy: userId,
             method: method,
+            sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             meta: meta
         }], session);
 
@@ -157,7 +172,7 @@ export const TreasuryService = {
     /**
      * Record a transaction (collection/payment) for a generic debt (Manual/Opening Balance)
      */
-    async recordDebtTransaction(debtId, partnerId, amount, type, userId, description, method = 'cash', meta = {}, session = null) {
+    async recordDebtTransaction(debtId, partnerId, amount, type, userId, description, method = 'cash', meta = {}, session = null, sourceNumber = '') {
         // CONCURRENCY FIX (Sprint 08): omit the key for EXPENSE rows instead of
         // storing receiptNumber: null — the sparse unique index treats explicit
         // null as a value, so the SECOND null-receipt insert died with E11000.
@@ -175,6 +190,7 @@ export const TreasuryService = {
             partnerId: partnerId,
             date: new Date(),
             method: method,
+            sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId,
             meta: meta
         };
@@ -210,6 +226,7 @@ export const TreasuryService = {
             partnerId: purchaseOrder.supplier,
             date: purchaseOrder.receivedDate || new Date(),
             method: payMethod,
+            sourceNumber: purchaseOrder.sourceNumber, // FIN-SVC-004 (Sprint 3)
             createdBy: userId
         }], session);
 
@@ -227,7 +244,7 @@ export const TreasuryService = {
     /**
      * Record payment made to a supplier (Debt repayment)
      */
-    async recordSupplierPayment(supplier, amount, poNumber, poId, userId, method = 'cash', note = '', meta = {}, session = null) {
+    async recordSupplierPayment(supplier, amount, poNumber, poId, userId, method = 'cash', note = '', meta = {}, session = null, sourceNumber = '') {
         const supplierMethodLabel = methodLabel(method);
         const transaction = await this._createTransactions([{
             type: 'EXPENSE',
@@ -238,6 +255,7 @@ export const TreasuryService = {
             partnerId: supplier?._id || supplier,
             date: new Date(),
             method: method,
+            sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId,
             meta: meta
         }], session);
@@ -314,7 +332,7 @@ export const TreasuryService = {
     /**
      * Add manual income entry
      */
-    async addManualIncome(date, amount, reason, userId, method = 'cash', session = null) {
+    async addManualIncome(date, amount, reason, userId, method = 'cash', session = null, sourceNumber = '') {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -342,6 +360,7 @@ export const TreasuryService = {
             referenceType: 'Manual',
             date: new Date(),
             method,
+            sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId
         }], session);
 
@@ -359,7 +378,7 @@ export const TreasuryService = {
     /**
      * Add manual expense entry
      */
-    async addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null) {
+    async addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null, sourceNumber = '') {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -387,6 +406,7 @@ export const TreasuryService = {
             referenceType: 'Manual',
             date: new Date(),
             method,
+            sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId
         }], session);
 
@@ -419,6 +439,8 @@ export const TreasuryService = {
             partnerId: salesReturn.customer,
             date: new Date(),
             method: method,
+            // Refund destination account — OPTIONAL (flagged ambiguity, REQ-VAL).
+            sourceNumber: salesReturn.sourceNumber || salesReturn.destinationNumber || undefined,
             createdBy: userId
         }], session);
 
@@ -876,7 +898,14 @@ export const TreasuryService = {
             remainingBalance = partner?.balance || 0;
         }
 
-        return { transaction, partner, settings, remainingBalance };
+        return {
+            transaction,
+            partner,
+            settings,
+            remainingBalance,
+            // FIN-SVC-002 (Sprint 3): masked transfer source for display.
+            sourceNumberDisplay: maskSource(transaction.sourceNumber)
+        };
     }
 };
 
