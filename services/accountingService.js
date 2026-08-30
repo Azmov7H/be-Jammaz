@@ -33,7 +33,8 @@ export const ACCOUNTS = {
     SHORTAGE_EXPENSE: 'خسائر النواقص',
     SURPLUS_INCOME: 'إيرادات الفوائض',
     SALES_RETURNS: 'مردودات المبيعات',
-    WALLET: 'محفظة كاش'
+    WALLET: 'محفظة كاش',
+    INSTAPAY: 'انستا باي'
 };
 
 export const AccountingService = {

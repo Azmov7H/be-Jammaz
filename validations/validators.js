@@ -23,7 +23,7 @@ export const paginationSchema = z.object({
     search: z.string().max(200).optional(),
 });
 
-const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check']).optional();
+const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay']).optional();
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -165,7 +165,8 @@ export const invoiceSchema = z.object({
     tax: money.default(0),
     discount: money.optional(),
     notes: z.string().max(2000).optional(),
-    paymentType: z.enum(['cash', 'credit', 'bank', 'wallet', 'check']).default('cash'),
+    paymentType: z.enum(['cash', 'credit', 'bank', 'wallet', 'check', 'instapay']).default('cash'),
+    sourceNumber: z.string().max(100).optional(),
     dueDate: dateField,
     shippingCompany: z.string().max(200).optional()
 }).refine(
@@ -188,19 +189,20 @@ export const purchaseOrderSchema = z.object({
     })).min(1, 'قائمة الأصناف فارغة').max(500),
     notes: z.string().max(2000).optional(),
     expectedDate: dateField,
-    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).default('cash')
+    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check', 'instapay']).default('cash'),
+    sourceNumber: z.string().max(100).optional()
 });
 
 export const poStatusSchema = z.object({
     status: z.enum(['DRAFT', 'SENT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']),
-    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).optional()
+    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check', 'instapay']).optional()
 });
 
 export const poReceiveSchema = z.object({
     // FIX (Sprint 08): no .default('cash') here — a bare /receive call must
     // fall back to the PO's own payment type (credit stays credit), not be
     // silently paid in cash.
-    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check']).optional(),
+    paymentType: z.enum(['cash', 'bank', 'credit', 'wallet', 'check', 'instapay']).optional(),
     receivedItems: z.array(z.object({
         productId: idField,
         quantity: qty,
@@ -217,6 +219,7 @@ export const customerPaymentSchema = z.object({
     invoice: idField,
     amount: positiveMoney,
     method: paymentMethod,
+    sourceNumber: z.string().max(100).optional(),
     note: noteField,
 });
 
@@ -226,6 +229,7 @@ export const counterpartyPaymentSchema = z.object({
     debtId: idField.optional(),
     amount: positiveMoney,
     method: paymentMethod,
+    sourceNumber: z.string().max(100).optional(),
     note: noteField,
 }).refine(data => data.customerId || data.supplierId || data.debtId, {
     message: 'يجب تحديد العميل أو المورد أو الدين'
@@ -235,6 +239,7 @@ export const supplierPaymentSchema = z.object({
     po: idField,
     amount: positiveMoney,
     method: paymentMethod,
+    sourceNumber: z.string().max(100).optional(),
     note: noteField,
 });
 
@@ -242,6 +247,7 @@ export const debtPaymentSchema = z.object({
     debt: idField,
     amount: positiveMoney,
     method: paymentMethod,
+    sourceNumber: z.string().max(100).optional(),
     note: noteField,
 });
 
@@ -264,6 +270,7 @@ export const expenseSchema = z.object({
     category: z.string().min(2, 'يجب اختيار التصنيف').max(100),
     date: dateField,
     method: paymentMethod,
+    sourceNumber: z.string().max(100).optional(),
 });
 
 export const installmentPlanSchema = z.object({

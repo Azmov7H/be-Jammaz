@@ -43,8 +43,15 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     },
     method: {
         type: String,
-        enum: ['cash', 'bank', 'wallet', 'check', 'adjustment'],
+        enum: ['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay'],
         default: 'cash'
+    },
+    // Transfer-source / reference number (e.g. InstaPay transaction ID).
+    // Optional at the DB layer; required only for NEW instapay/wallet transactions via Zod (Sprint 3, FIN-VAL-002).
+    sourceNumber: {
+        type: String,
+        maxlength: 100,
+        index: true
     },
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,

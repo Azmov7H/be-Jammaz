@@ -32,6 +32,11 @@ const CustomerSchema = new mongoose.Schema({
     },
     paymentTerms: { type: Number, default: 0, min: 0, max: 365 }, // T-DB-02
 
+    // Customer ↔ Supplier unification (Sprint 7 foundation, FIN-MDL-005)
+    taxNumber: { type: String, maxlength: 50 },
+    isSupplier: { type: Boolean, default: false },
+    linkedSupplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', sparse: true, unique: true },
+
     totalPurchases: { type: Number, default: 0 },
     lastPurchaseDate: Date,
 
