@@ -56,7 +56,7 @@ export const PaymentService = {
         await dbConnect();
         // T-BIZ-01: all-or-nothing across invoice/debt/customer/treasury/cashbox
         return withRetry(() => withTransaction(async (session) => {
-            await invoice.recordPayment(amount, method, note, userId, session);
+            await invoice.recordPayment(amount, method, note, userId, session, sourceNumber);
 
             faultInject('recordCustomerPayment:afterInvoice');
 

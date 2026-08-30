@@ -67,13 +67,13 @@ const InvoiceSchema = new mongoose.Schema({
 });
 
 // Method to record payment
-InvoiceSchema.methods.recordPayment = function (amount, method, note, userId, session = null) {
+InvoiceSchema.methods.recordPayment = function (amount, method, note, userId, session = null, sourceNumber = '') {
     // T-DB-06: negative/zero amounts rejected at entry; the mutation is a
     // single atomic pipeline update — no read-modify-write race.
     if (!(amount > 0)) {
         throw new BadRequestError('قيمة الدفعة يجب أن تكون أكبر من صفر');
     }
-    const payment = { amount, method, note, recordedBy: userId, date: new Date() };
+    const payment = { amount, method, note, recordedBy: userId, date: new Date(), sourceNumber: sourceNumber || undefined };
 
     return this.constructor.findOneAndUpdate(
         { _id: this._id },
