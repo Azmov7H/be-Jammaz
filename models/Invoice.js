@@ -22,7 +22,7 @@ const InvoiceSchema = new mongoose.Schema({
 
     paymentType: {
         type: String,
-        enum: ['cash', 'credit', 'bank', 'wallet', 'check'],
+        enum: ['cash', 'credit', 'bank', 'wallet', 'check', 'instapay'],
         default: 'cash'
     },
     paymentStatus: {
@@ -36,7 +36,8 @@ const InvoiceSchema = new mongoose.Schema({
     payments: [{
         amount: { type: Number, required: true },
         date: { type: Date, default: Date.now },
-        method: { type: String, enum: ['cash', 'bank', 'wallet', 'check', 'credit_balance'], default: 'cash' },
+        method: { type: String, enum: ['cash', 'bank', 'wallet', 'check', 'credit_balance', 'instapay'], default: 'cash' },
+        sourceNumber: { type: String, maxlength: 100 },
         note: String,
         recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
     }],

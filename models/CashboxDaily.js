@@ -47,6 +47,12 @@ const CashboxDailySchema = new mongoose.Schema({
     checkExpenses: { type: Number, default: 0, min: 0 },
     closingCheckBalance: { type: Number, default: 0 },
 
+    // InstaPay
+    openingInstapayBalance: { type: Number, default: 0 },
+    instapayIncome: { type: Number, default: 0, min: 0 },
+    instapayExpenses: { type: Number, default: 0, min: 0 },
+    closingInstapayBalance: { type: Number, default: 0 },
+
     // Manual entries (Always assumed cash for physical cashbox simplicity, but can be mixed)
     manualIncome: [{
         amount: {
@@ -139,14 +145,15 @@ CashboxDailySchema.pre('save', async function () {
     const manualExpensesTotal = this.manualExpenses.reduce((sum, entry) => sum + entry.amount, 0);
 
     // Calculate totals
-    this.totalIncome = (this.salesIncome || 0) + (this.bankIncome || 0) + (this.walletIncome || 0) + (this.checkIncome || 0) + manualIncomeTotal;
-    this.totalExpenses = (this.purchaseExpenses || 0) + (this.bankExpenses || 0) + (this.walletExpenses || 0) + (this.checkExpenses || 0) + manualExpensesTotal;
+    this.totalIncome = (this.salesIncome || 0) + (this.bankIncome || 0) + (this.walletIncome || 0) + (this.checkIncome || 0) + (this.instapayIncome || 0) + manualIncomeTotal;
+    this.totalExpenses = (this.purchaseExpenses || 0) + (this.bankExpenses || 0) + (this.walletExpenses || 0) + (this.checkExpenses || 0) + (this.instapayExpenses || 0) + manualExpensesTotal;
     this.netChange = this.totalIncome - this.totalExpenses;
 
     // Per-method closing balances
     this.closingBankBalance = (this.openingBankBalance || 0) + (this.bankIncome || 0) - (this.bankExpenses || 0);
     this.closingWalletBalance = (this.openingWalletBalance || 0) + (this.walletIncome || 0) - (this.walletExpenses || 0);
     this.closingCheckBalance = (this.openingCheckBalance || 0) + (this.checkIncome || 0) - (this.checkExpenses || 0);
+    this.closingInstapayBalance = (this.openingInstapayBalance || 0) + (this.instapayIncome || 0) - (this.instapayExpenses || 0);
 
     // Expected closing balance (Total)
     const expectedClosing = this.openingBalance + this.netChange;

@@ -19,7 +19,12 @@ const SupplierSchema = new mongoose.Schema({
         enum: ['None', 'Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
         default: 'None'
     },
-    supplyTerms: { type: Number, default: 0 } // 0 means use global default
+    supplyTerms: { type: Number, default: 0 }, // 0 means use global default
+
+    // Customer ↔ Supplier unification (Sprint 7 foundation, FIN-MDL-005)
+    taxNumber: { type: String, maxlength: 50 },
+    isCustomer: { type: Boolean, default: false },
+    linkedCustomer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', sparse: true, unique: true },
 }, { timestamps: true });
 
 export default mongoose.models.Supplier || mongoose.model('Supplier', SupplierSchema);
