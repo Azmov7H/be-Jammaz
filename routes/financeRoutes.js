@@ -76,6 +76,29 @@ router.get('/debts', routeHandler(async (req) => {
     return await DebtService.getDebts(req.query, { page: req.query.page, limit: req.query.limit });
 }));
 
+// Sync/initialize a Debt from the party's consolidated balance (manual opening balance)
+router.post('/debts/sync', roleMiddleware(['owner', 'manager']), validate(z.object({
+    debtorId: idSchema,
+    debtorType: z.enum(['Customer', 'Supplier'])
+})), routeHandler(async (req) => {
+    return await DebtService.syncDebts(req.body.debtorId, req.body.debtorType);
+}));
+
+// Update a debt record manually (money-path — adjusts balance + treasury adjustment)
+router.patch('/debts/:id',
+    validateParams(z.object({ id: idSchema })),
+    roleMiddleware(['owner', 'manager']),
+    validate(z.object({
+        originalAmount: z.coerce.number().min(0).max(1e9).optional(),
+        remainingAmount: z.coerce.number().min(0).max(1e9).optional(),
+        dueDate: z.string().optional().nullable(),
+        description: z.string().max(500).optional(),
+    })),
+    routeHandler(async (req) => {
+        return await DebtService.updateDebt(req.params.id, req.body);
+    })
+);
+
 // Canonical: Get Installments for Debt
 router.get('/debts/:debtId/installments', routeHandler(async (req) => {
     return await DebtService.getInstallments(req.params.debtId);
@@ -104,6 +127,11 @@ router.get('/installments/:debtId', deprecated, routeHandler(async (req) => {
 router.post('/payments', roleMiddleware(['owner', 'manager']), validate(counterpartyPaymentSchema), routeHandler(async (req) => {
     const { customerId, supplierId, debtId, amount, method, note, sourceNumber } = req.body;
     return await FinanceService.resolvePayment({ customerId, supplierId, debtId, amount, method, note, sourceNumber }, req.user._id);
+}));
+
+// Payment history for a debt (from treasury transactions) — SEC-PII masked
+router.get('/payments', validate(z.object({ debtId: idSchema }), 'query'), routeHandler(async (req) => {
+    return await DebtService.getDebtPayments(req.query.debtId);
 }));
 
 // Get receipt by transaction ID
