@@ -308,3 +308,113 @@ describe('renderHtml — CUSTOMER_COLLECTION_RECEIPT', () => {
         expect(html).not.toContain('فاتورة مبيعات');
     });
 });
+
+function sampleStatement(overrides = {}) {
+    return {
+        type: 'customer_statement',
+        title: 'كشف حساب عميل',
+        documentType: 'CUSTOMER_STATEMENT',
+        branding: {
+            companyName: 'مؤسستي',
+            primaryColor: '#1B3C73',
+            headerBgColor: '#1B3C73',
+            address: '', phone: '', additionalPhones: [],
+            email: '', website: '', footerText: 'شكراً',
+        },
+        customer: {
+            id: OID,
+            name: 'شركة الأمل',
+            phone: '01012345678',
+            address: 'القاهرة',
+            taxNumber: 'T-100',
+            linkedSupplier: null,
+        },
+        period: {
+            startDate: '2026-08-01T00:00:00.000Z',
+            endDate: '2026-08-31T23:59:59.000Z',
+            days: 30,
+        },
+        openingBalance: 1500,
+        closingBalance: 2200,
+        currentSnapshotBalance: 2200,
+        balanceDelta: '0.00',
+        totals: { debits: 1000, credits: 300, net: 700 },
+        lines: [
+            { id: '1', type: 'INVOICE', reference: 'INV-1', label: 'فاتورة مبيعات #INV-1', description: '...', debit: 1000, credit: 0, balance: 2500, dateFormatted: '2026-08-10T00:00:00.000Z', debitFormatted: '1000.00', creditFormatted: '0.00', balanceFormatted: '2500.00' },
+            { id: '2', type: 'PAYMENT', reference: 'R-1', label: 'تحصيل نقدي', description: '...', debit: 0, credit: 300, balance: 2200, dateFormatted: '2026-08-15T00:00:00.000Z', debitFormatted: '0.00', creditFormatted: '300.00', balanceFormatted: '2200.00' },
+        ],
+        generatedAt: '2026-09-01T10:00:00.000Z',
+        generatedBy: 'Owner',
+        filters: { startDate: '2026-08-01T00:00:00.000Z', endDate: '2026-08-31T23:59:59.000Z' },
+        ...overrides,
+    };
+}
+
+describe('renderHtml — CUSTOMER_STATEMENT', () => {
+    it('renders the statement header + customer block', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement());
+        expect(html).toContain('كشف حساب عميل');
+        expect(html).toContain('شركة الأمل');
+        expect(html).toContain('data-document-type="customer-statement"');
+    });
+
+    it('shows the opening, total-debits, total-credits summary cards', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement());
+        expect(html).toContain('الرصيد الافتتاحي');
+        expect(html).toContain('إجمالي المدين');
+        expect(html).toContain('إجمالي الدائن');
+        expect(html).toContain('1,500.00');   // opening
+        expect(html).toContain('1,000.00');   // debits
+        expect(html).toContain('300.00');     // credits
+    });
+
+    it('renders the closing balance and current snapshot', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement());
+        expect(html).toContain('الرصيد الختامي');
+        expect(html).toContain('الرصيد المسجل بالنظام');
+    });
+
+    it('shows a reconciliation OK banner when balanceDelta is 0', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement({ balanceDelta: '0.00' }));
+        expect(html).toContain('الرصيد متطابق مع السجل');
+    });
+
+    it('shows a reconciliation WARN banner when balanceDelta is non-zero', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement({ balanceDelta: '150.50', currentSnapshotBalance: 2050 }));
+        expect(html).toContain('تنبيه: فرق تسوية');
+        expect(html).toContain('150.50');
+        expect(html).toContain('delta-banner warn');
+    });
+
+    it('renders one row per line and the running balance', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement());
+        expect(html).toContain('INV-1');
+        expect(html).toContain('R-1');
+        expect(html).toContain('2,500.00'); // running after invoice
+        expect(html).toContain('2,200.00'); // running after payment (closing)
+    });
+
+    it('escapes XSS in customer name and description', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement({
+            customer: { id: OID, name: '<script>alert(1)</script>', phone: '', address: '', taxNumber: '', linkedSupplier: null },
+            lines: [
+                { id: '1', type: 'INVOICE', reference: 'X', label: '<img src=x>', description: 'bad', debit: 1, credit: 0, balance: 1, dateFormatted: '2026-08-10T00:00:00.000Z', debitFormatted: '1.00', creditFormatted: '0.00', balanceFormatted: '1.00' }
+            ]
+        }));
+        expect(html).not.toContain('<script>alert(1)</script>');
+        expect(html).not.toContain('<img src=x>');
+        expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('paginates long statements (multi-page)', () => {
+        const lines = Array.from({ length: 35 }, (_, i) => ({
+            id: String(i), type: 'INVOICE', reference: `INV-${i}`, label: `فاتورة #${i}`,
+            description: '', debit: 100, credit: 0, balance: 1500 + (i + 1) * 100,
+            dateFormatted: '2026-08-10T00:00:00.000Z',
+            debitFormatted: '100.00', creditFormatted: '0.00', balanceFormatted: String(1500 + (i + 1) * 100)
+        }));
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement({ lines }));
+        expect(html).toContain('صفحة 1 من 2');
+        expect(html).toContain('صفحة 2 من 2');
+    });
+});
