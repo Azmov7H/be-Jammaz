@@ -574,3 +574,127 @@ describe('renderHtml — PURCHASE_INVOICE', () => {
         expect(html).toContain('لا توجد عناصر');
     });
 });
+
+function sampleSupplierReceipt(overrides = {}) {
+    return {
+        type: 'supplier_payment_receipt',
+        title: 'سند سداد لمورد',
+        documentType: 'SUPPLIER_PAYMENT_RECEIPT',
+        number: 'EXP-100',
+        receiptNumber: 'EXP-100',
+        date: '20 أغسطس 2026',
+        time: '14:30',
+        status: 'مدفوع',
+        branding: {
+            companyName: 'مؤسستي',
+            primaryColor: '#1B3C73',
+            headerBgColor: '#1B3C73',
+            address: '', phone: '', additionalPhones: [],
+            email: '', website: '', footerText: 'شكراً',
+        },
+        supplier: {
+            id: OID,
+            name: 'مورد الأمل',
+            phone: '01098765432',
+            address: 'الجيزة',
+            taxNumber: 'T-SUP-1',
+            balance: 1000,
+            linkedCustomer: null,
+        },
+        transaction: {
+            id: OID,
+            referenceType: 'PurchaseOrder',
+            referenceTypeLabel: 'أمر شراء',
+            referenceNumber: 'PO-1',
+            reference: { number: 'PO-1', total: 2000, paid: 500, status: 'RECEIVED' },
+            description: 'سداد رصيد أمر شراء',
+            createdBy: 'علي',
+        },
+        payment: {
+            method: 'cash',
+            methodLabel: 'نقدي',
+            channel: 'private_treasury',
+            channelLabel: 'الخزينة الخاصة',
+            sourceNumber: '',
+            isElectronic: false,
+        },
+        paidAmount: 500,
+        previousBalance: 1500,
+        remainingBalance: 1000,
+        currentSupplierBalance: 1000,
+        generatedAt: '2026-09-01T10:00:00.000Z',
+        generatedBy: 'Owner',
+        filters: {},
+        ...overrides,
+    };
+}
+
+describe('renderHtml — SUPPLIER_PAYMENT_RECEIPT', () => {
+    it('renders the supplier-receipt title + receiptNumber + status badge', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt());
+        expect(html).toContain('سند سداد لمورد');
+        expect(html).toContain('EXP-100');
+        expect(html).toContain('data-document-type="supplier-payment-receipt"');
+    });
+
+    it('shows the supplier block (NOT a customer block) + current balance in red', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt());
+        expect(html).toContain('بيانات المورد');
+        expect(html).toContain('مورد الأمل');
+        expect(html).toContain('1,000.00');
+        expect(html).toContain('color: #b91c1c');
+        expect(html).not.toContain('بيانات العميل');
+    });
+
+    it('renders the amount box with the paid amount (المبلغ المدفوع)', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt());
+        expect(html).toContain('المبلغ المدفوع');
+        expect(html).toContain('500.00');
+    });
+
+    it('renders the previous / paid / remaining balance trio', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt());
+        expect(html).toContain('الرصيد السابق');
+        expect(html).toContain('الرصيد المتبقي');
+        expect(html).toContain('1,500.00'); // previous
+        expect(html).toContain('500.00');   // paid
+        expect(html).toContain('1,000.00'); // remaining
+    });
+
+    it('renders the description block ("وذلك عن") with the tx description', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt());
+        expect(html).toContain('وذلك عن');
+        expect(html).toContain('سداد رصيد أمر شراء');
+    });
+
+    it('renders the reference type label (أمر شراء) + reference number', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt());
+        expect(html).toContain('أمر شراء');
+        expect(html).toContain('PO-1');
+    });
+
+    it('hides the source number row when the channel is not electronic', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt({
+            payment: { method: 'cash', methodLabel: 'نقدي', channel: 'private_treasury', channelLabel: 'الخزينة الخاصة', sourceNumber: '', isElectronic: false }
+        }));
+        expect(html).not.toContain('مرجع التحويل');
+    });
+
+    it('shows the source number row when the channel is electronic', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt({
+            payment: { method: 'instapay', methodLabel: 'انستا باي', channel: 'electronic', channelLabel: 'إلكتروني', sourceNumber: 'IPX-9988', isElectronic: true }
+        }));
+        expect(html).toContain('مرجع التحويل');
+        expect(html).toContain('IPX-9988');
+    });
+
+    it('escapes XSS in the supplier name + description', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_PAYMENT_RECEIPT, sampleSupplierReceipt({
+            supplier: { id: OID, name: '<script>alert(1)</script>', phone: '', address: '', taxNumber: '', balance: 0, linkedCustomer: null },
+            transaction: { id: OID, referenceType: 'Manual', referenceTypeLabel: 'دفع يدوي', referenceNumber: '', reference: null, description: '<img src=x>', createdBy: '' },
+        }));
+        expect(html).not.toContain('<script>alert(1)</script>');
+        expect(html).not.toContain('<img src=x>');
+        expect(html).toContain('&lt;script&gt;');
+    });
+});
