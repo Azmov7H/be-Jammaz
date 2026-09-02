@@ -418,3 +418,159 @@ describe('renderHtml — CUSTOMER_STATEMENT', () => {
         expect(html).toContain('صفحة 2 من 2');
     });
 });
+
+function samplePurchaseInvoice(overrides = {}) {
+    return {
+        type: 'PURCHASE_INVOICE',
+        title: 'فاتورة مشتريات',
+        number: 'PO-100',
+        date: '20 أغسطس 2026',
+        time: '14:30',
+        status: 'مستلم',
+        paymentStatusLabel: 'مدفوع جزئياً',
+        branding: {
+            companyName: 'مؤسستي',
+            primaryColor: '#1B3C73',
+            headerBgColor: '#1B3C73',
+            address: '', phone: '', additionalPhones: [],
+            email: '', website: '', footerText: 'شكراً',
+        },
+        supplier: {
+            id: OID,
+            name: 'مورد الأمل',
+            phone: '01098765432',
+            address: 'الجيزة',
+            taxNumber: 'T-SUP-1',
+            balance: 5000,
+        },
+        purchaseOrder: {
+            id: OID,
+            number: 'PO-100',
+            date: '2026-08-20T00:00:00.000Z',
+            expectedDate: '2026-08-15T00:00:00.000Z',
+            receivedDate: '2026-08-20T00:00:00.000Z',
+            status: 'RECEIVED',
+            statusLabel: 'مستلم',
+            notes: 'استلام جزئي',
+            createdBy: 'علي',
+        },
+        items: [
+            { id: 'i1', productId: 'p1', productCode: 'A1', productName: 'منتج أ', qty: 10, unitPrice: 100, lineTotal: 1000 },
+            { id: 'i2', productId: 'p2', productCode: 'B2', productName: 'منتج ب', qty: 3, unitPrice: 50, lineTotal: 150 },
+        ],
+        totals: {
+            subtotal: 1150,
+            tax: 0,
+            discount: 0,
+            total: 1150,
+            paidAmount: 500,
+            remaining: 650,
+        },
+        payment: {
+            method: 'cash',
+            methodLabel: 'نقدي',
+            channel: 'private_treasury',
+            channelLabel: 'الخزينة الخاصة',
+            sourceNumber: '',
+            isElectronic: false,
+            dueDate: '15 أغسطس 2026',
+        },
+        generatedAt: '2026-09-01T10:00:00.000Z',
+        generatedBy: { name: 'Owner' },
+        filters: {},
+        ...overrides,
+    };
+}
+
+describe('renderHtml — PURCHASE_INVOICE', () => {
+    it('renders the purchase-invoice title + number + status badge', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice());
+        expect(html).toContain('فاتورة مشتريات');
+        expect(html).toContain('PO-100');
+        expect(html).toContain('مستلم');
+        expect(html).toContain('data-document-type="purchase-invoice"');
+    });
+
+    it('shows the supplier block (NOT a customer block)', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice());
+        expect(html).toContain('بيانات المورد');
+        expect(html).toContain('مورد الأمل');
+        expect(html).toContain('الرقم الضريبي');
+        // No customer block
+        expect(html).not.toContain('بيانات العميل');
+    });
+
+    it('shows the live supplier credit-owed balance in red', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice());
+        expect(html).toContain('رصيد المورد الحالي');
+        expect(html).toContain('5,000.00');
+        expect(html).toContain('color: #b91c1c');
+    });
+
+    it('renders one row per item with lineTotal', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice());
+        expect(html).toContain('منتج أ');
+        expect(html).toContain('منتج ب');
+        expect(html).toContain('1,000.00');
+        expect(html).toContain('150.00');
+    });
+
+    it('renders totals: subtotal, grand, paid, remaining', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice());
+        expect(html).toContain('الإجمالي قبل الضريبة');
+        expect(html).toContain('الإجمالي');
+        expect(html).toContain('المدفوع');
+        expect(html).toContain('المتبقي');
+        expect(html).toContain('650.00');
+    });
+
+    it('hides the source number row when the channel is not electronic', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice({
+            payment: {
+                method: 'cash', methodLabel: 'نقدي',
+                channel: 'private_treasury', channelLabel: 'الخزينة الخاصة',
+                sourceNumber: '', isElectronic: false, dueDate: '',
+            }
+        }));
+        expect(html).not.toContain('مرجع التحويل');
+    });
+
+    it('shows the source number row when the channel is electronic (no masking in the renderer)', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice({
+            payment: {
+                method: 'instapay', methodLabel: 'انستا باي',
+                channel: 'electronic', channelLabel: 'إلكتروني',
+                sourceNumber: 'IPX-9988', isElectronic: true, dueDate: '',
+            }
+        }));
+        expect(html).toContain('مرجع التحويل');
+        expect(html).toContain('IPX-9988');
+    });
+
+    it('renders the PO status as a badge (RECEIVED → green)', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice());
+        expect(html).toContain('badge-paid');
+    });
+
+    it('shows a CANCELLED PO status', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice({
+            status: 'ملغي', paymentStatusLabel: '',
+        }));
+        expect(html).toContain('ملغي');
+    });
+
+    it('escapes XSS in the supplier name and notes', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice({
+            supplier: { id: OID, name: '<script>alert(1)</script>', phone: '', address: '', taxNumber: '', balance: 0 },
+            purchaseOrder: { id: OID, number: 'PO', date: '', expectedDate: null, receivedDate: null, status: 'PENDING', statusLabel: 'قيد الانتظار', notes: '<img src=x>', createdBy: '' },
+        }));
+        expect(html).not.toContain('<script>alert(1)</script>');
+        expect(html).not.toContain('<img src=x>');
+        expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('handles an empty items list without crashing', () => {
+        const html = renderHtml(DOCUMENT_TYPES.PURCHASE_INVOICE, samplePurchaseInvoice({ items: [] }));
+        expect(html).toContain('لا توجد عناصر');
+    });
+});
