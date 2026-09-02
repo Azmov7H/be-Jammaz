@@ -186,3 +186,125 @@ describe('renderPrintHtml', () => {
         expect(html).not.toContain('window.print()');
     });
 });
+
+// ---------------------------------------------------------------------------
+// CUSTOMER_COLLECTION_RECEIPT
+// ---------------------------------------------------------------------------
+
+function sampleReceipt(overrides = {}) {
+    return {
+        type: DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT,
+        title: 'سند تحصيل من عميل',
+        documentType: 'customer-collection-receipt',
+        receiptNumber: 'REC-100',
+        date: '30/08/2026',
+        time: '14:30',
+        status: 'مدفوع',
+        branding: {
+            companyName: 'مؤسستي',
+            primaryColor: '#1B3C73',
+            headerBgColor: '#1B3C73',
+            address: 'القاهرة',
+            phone: '010',
+            additionalPhones: [],
+            email: '',
+            website: '',
+            footerText: 'شكراً',
+        },
+        customer: { name: 'شركة عينة', phone: '010', address: 'القاهرة', taxNumber: '12345' },
+        transaction: {
+            id: 'tx-1',
+            amount: 500,
+            description: 'تحصيل دفعة',
+            referenceType: 'UnifiedCollection',
+            referenceTypeLabel: 'تحصيل مجمع',
+            referenceNumber: '—',
+            createdBy: 'علي',
+        },
+        previousBalance: 2000,
+        remainingBalance: 1500,
+        collectedAmount: 500,
+        payment: {
+            method: 'cash', methodLabel: 'نقدي',
+            channel: 'private_treasury', channelLabel: 'الخزينة الخاصة',
+            sourceNumber: '', isElectronic: false,
+        },
+        ...overrides,
+    };
+}
+
+describe('renderHtml — CUSTOMER_COLLECTION_RECEIPT', () => {
+    it('renders the receipt with the customer-collection title', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt());
+        expect(html).toContain('سند تحصيل من عميل');
+        expect(html).toContain('REC-100');
+        expect(html).toContain('data-document-type="customer-collection-receipt"');
+    });
+
+    it('renders the amount box with the collected amount + currency', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt({
+            collectedAmount: 1234.5,
+        }));
+        expect(html).toContain('1,234.50');
+        expect(html).toContain('المبلغ المستلم');
+    });
+
+    it('renders the previous / collected / remaining balance trio', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt({
+            previousBalance: 3000,
+            collectedAmount: 1500,
+            remainingBalance: 1500,
+        }));
+        expect(html).toContain('الرصيد السابق');
+        expect(html).toContain('المبلغ المحصل');
+        expect(html).toContain('الرصيد المتبقي');
+        expect(html).toContain('3,000.00');
+        expect(html).toContain('1,500.00');
+    });
+
+    it('shows the source number for electronic channels when present', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt({
+            payment: {
+                method: 'instapay', methodLabel: 'انستا باي',
+                channel: 'instapay', channelLabel: 'انستا باي',
+                sourceNumber: '**** 4321', isElectronic: true,
+            },
+        }));
+        expect(html).toContain('**** 4321');
+        expect(html).toContain('رقم التحويل');
+    });
+
+    it('hides the source number for cash / bank / check', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt());
+        expect(html).not.toContain('رقم التحويل');
+    });
+
+    it('renders the description block when present', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt({
+            transaction: { ...sampleReceipt().transaction, description: 'دفعة عن الفاتورة 123' },
+        }));
+        expect(html).toContain('دفعة عن الفاتورة 123');
+        expect(html).toContain('وذلك عن / البيان');
+    });
+
+    it('escapes XSS attempts in the description', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt({
+            transaction: { ...sampleReceipt().transaction, description: '<script>alert(1)</script>' },
+        }));
+        expect(html).not.toContain('<script>alert(1)</script>');
+        expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('renders a badge for the status (always "paid" for collections)', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt());
+        expect(html).toContain('badge-paid');
+        expect(html).toContain('مدفوع');
+    });
+
+    it('uses the receiptNumber as the document identifier (no separate invoice#)', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT, sampleReceipt());
+        expect(html).toContain('REC-100');
+        // No "فاتورة" title.
+        expect(html).not.toContain('فاتورة مبيعات');
+    });
+});
