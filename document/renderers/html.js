@@ -564,6 +564,197 @@ function nextSprintFor(type) {
 }
 
 // ---------------------------------------------------------------------------
+// CUSTOMER_STATEMENT
+// ---------------------------------------------------------------------------
+
+RENDERERS[DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT] = function renderCustomerStatement(data) {
+    const {
+        branding = {},
+        title = 'كشف حساب عميل',
+        customer = {},
+        period = {},
+        openingBalance = 0,
+        closingBalance = 0,
+        currentSnapshotBalance = 0,
+        balanceDelta = '0.00',
+        totals = { debits: 0, credits: 0, net: 0 },
+        lines = [],
+        generatedAt,
+        generatedBy
+    } = data || {};
+
+    const startDate = period.startDate ? new Date(period.startDate).toLocaleDateString('ar-EG') : '—';
+    const endDate = period.endDate ? new Date(period.endDate).toLocaleDateString('ar-EG') : '—';
+    const generatedAtStr = generatedAt ? new Date(generatedAt).toLocaleString('ar-EG') : '—';
+
+    const rowLimit = 28;
+    const pages = Math.max(1, Math.ceil(lines.length / rowLimit));
+    const pageChunks = [];
+    for (let p = 0; p < pages; p++) {
+        pageChunks.push(lines.slice(p * rowLimit, (p + 1) * rowLimit));
+    }
+
+    const hasDelta = Math.abs(Number(balanceDelta)) >= 0.01;
+    const deltaClass = hasDelta ? 'badge-partial' : 'badge-paid';
+    const deltaLabel = hasDelta
+        ? `تنبيه: فرق تسوية ${fmtMoney(balanceDelta)} ج.م`
+        : 'الرصيد متطابق مع السجل';
+
+    const pagesHtml = pageChunks.map((chunk, p) => `
+        <div class="page" data-page="${p + 1}">
+            <table class="stmt-table">
+                <thead>
+                    <tr>
+                        <th style="width: 60px;">م</th>
+                        <th style="width: 110px;">التاريخ</th>
+                        <th>البيان</th>
+                        <th style="width: 100px;">المرجع</th>
+                        <th style="width: 110px;" class="num">مدين</th>
+                        <th style="width: 110px;" class="num">دائن</th>
+                        <th style="width: 120px;" class="num">الرصيد</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${chunk.length === 0
+                        ? `<tr><td colspan="7" class="empty">لا توجد حركات في هذه الصفحة</td></tr>`
+                        : chunk.map((line, i) => `
+                            <tr>
+                                <td>${p * rowLimit + i + 1}</td>
+                                <td>${esc(line.dateFormatted ? new Date(line.dateFormatted).toLocaleDateString('ar-EG') : '—')}</td>
+                                <td>${esc(line.label || line.description || '—')}</td>
+                                <td class="mono">${esc(line.reference || '—')}</td>
+                                <td class="num mono">${Number(line.debit) > 0 ? fmtMoney(line.debit) : '—'}</td>
+                                <td class="num mono">${Number(line.credit) > 0 ? fmtMoney(line.credit) : '—'}</td>
+                                <td class="num mono strong">${fmtMoney(line.balance)}</td>
+                            </tr>
+                        `).join('')}
+                </tbody>
+            </table>
+            <div class="page-footer">صفحة ${p + 1} من ${pages}</div>
+        </div>
+    `).join('');
+
+    return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>${esc(title)} — ${esc(customer.name || '')}</title>
+<style>
+    :root { --primary: ${branding.primaryColor || '#1B3C73'}; --header-bg: ${branding.headerBgColor || '#1B3C73'}; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Cairo', 'Tahoma', sans-serif; padding: 24px; color: #1f2937; background: #f9fafb; margin: 0; }
+    .doc { background: #fff; max-width: 210mm; margin: 0 auto; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 3px solid var(--primary); margin-bottom: 24px; }
+    .header .brand h1 { margin: 0; font-size: 22px; color: var(--primary); }
+    .header .meta { color: #6b7280; font-size: 12px; margin-top: 4px; }
+    .header .contacts { color: #6b7280; font-size: 12px; margin-top: 2px; }
+    .header .title-box { background: var(--primary); color: #fff; padding: 8px 18px; border-radius: 6px; font-weight: 700; font-size: 16px; display: inline-block; }
+    .header .meta-box { text-align: start; margin-top: 8px; font-size: 13px; }
+    .customer-card { background: #f3f4f6; padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; border-inline-start: 4px solid var(--primary); }
+    .customer-card h3 { margin: 0 0 8px; font-size: 12px; color: #6b7280; font-weight: 700; letter-spacing: 0.04em; }
+    .customer-card .name { font-size: 18px; font-weight: 700; }
+    .customer-card .info { color: #4b5563; font-size: 12px; margin-top: 4px; }
+    .period { display: flex; justify-content: space-between; align-items: center; background: #eff6ff; padding: 10px 16px; border-radius: 6px; margin-bottom: 20px; font-size: 13px; }
+    .period strong { color: var(--primary); }
+    .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+    .summary-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; }
+    .summary-card .label { font-size: 11px; color: #6b7280; font-weight: 700; }
+    .summary-card .value { font-size: 18px; font-weight: 700; color: var(--primary); margin-top: 4px; font-family: 'Cairo', monospace; }
+    .summary-card.opening .value { color: #6b7280; }
+    .summary-card.closing .value { color: var(--primary); }
+    .summary-card.closing.negative .value { color: #b91c1c; }
+    .summary-card.closing.positive .value { color: #047857; }
+    .delta-banner { padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; font-weight: 600; }
+    .delta-banner.ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+    .delta-banner.warn { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+    .stmt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .stmt-table th { background: var(--header-bg); color: #fff; padding: 8px; text-align: start; font-weight: 700; }
+    .stmt-table th.num, .stmt-table td.num { text-align: end; }
+    .stmt-table td { padding: 7px 8px; border-bottom: 1px solid #e5e7eb; }
+    .stmt-table tr:nth-child(even) td { background: #f9fafb; }
+    .stmt-table td.empty { text-align: center; color: #9ca3af; padding: 24px; }
+    .stmt-table td.mono { font-family: 'Cairo', monospace; }
+    .stmt-table td.strong { font-weight: 700; color: var(--primary); }
+    .totals-row td { background: #f3f4f6 !important; font-weight: 700; padding-top: 10px; padding-bottom: 10px; }
+    .page { page-break-after: always; }
+    .page:last-child { page-break-after: auto; }
+    .page-footer { text-align: center; color: #9ca3af; font-size: 11px; margin-top: 12px; }
+    .footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280; }
+    .footer .msg { font-weight: 700; color: var(--primary); margin-bottom: 4px; }
+    @media print {
+        @page { size: A4; margin: 14mm; }
+        body { padding: 0; background: #fff; }
+        .doc { box-shadow: none; padding: 0; }
+    }
+</style>
+</head>
+<body>
+<div class="doc" data-document-type="customer-statement">
+    <header class="header">
+        <div class="brand">
+            <h1>${esc(branding.companyName || 'شركتكم')}</h1>
+            ${branding.address ? `<div class="meta">${esc(branding.address)}</div>` : ''}
+            ${(branding.phone || (branding.additionalPhones && branding.additionalPhones.length))
+                ? `<div class="contacts">${esc([branding.phone, ...(branding.additionalPhones || [])].filter(Boolean).join(' — '))}</div>`
+                : ''}
+            ${branding.email ? `<div class="contacts">${esc(branding.email)}</div>` : ''}
+        </div>
+        <div>
+            <div class="title-box">${esc(title)}</div>
+            <div class="meta-box">من ${esc(startDate)} إلى ${esc(endDate)}</div>
+        </div>
+    </header>
+
+    <div class="customer-card">
+        <h3>العميل</h3>
+        <div class="name">${esc(customer.name || '—')}</div>
+        <div class="info">
+            ${customer.phone ? `هاتف: ${esc(customer.phone)} • ` : ''}
+            ${customer.taxNumber ? `الرقم الضريبي: ${esc(customer.taxNumber)} • ` : ''}
+            ${customer.address ? `${esc(customer.address)}` : ''}
+        </div>
+    </div>
+
+    <div class="summary">
+        <div class="summary-card opening">
+            <div class="label">الرصيد الافتتاحي</div>
+            <div class="value">${fmtMoney(openingBalance)} ج.م</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">إجمالي المدين</div>
+            <div class="value">${fmtMoney(totals.debits)} ج.م</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">إجمالي الدائن</div>
+            <div class="value">${fmtMoney(totals.credits)} ج.م</div>
+        </div>
+    </div>
+
+    <div class="summary">
+        <div class="summary-card closing ${closingBalance > 0 ? 'positive' : (closingBalance < 0 ? 'negative' : '')}" style="grid-column: span 2;">
+            <div class="label">الرصيد الختامي</div>
+            <div class="value">${fmtMoney(closingBalance)} ج.م</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">الرصيد المسجل بالنظام</div>
+            <div class="value">${fmtMoney(currentSnapshotBalance)} ج.م</div>
+        </div>
+    </div>
+
+    <div class="delta-banner ${hasDelta ? 'warn' : 'ok'}">${esc(deltaLabel)}</div>
+
+    ${pagesHtml}
+
+    <div class="footer">
+        <div class="msg">${esc(branding.footerText || 'شكراً لتعاملكم معنا')}</div>
+        <div>أُنشئ في ${esc(generatedAtStr)}${generatedBy ? ` بواسطة ${esc(generatedBy)}` : ''}</div>
+    </div>
+</div>
+</body>
+</html>`;
+};
+
+// ---------------------------------------------------------------------------
 // Renderer entry point
 // ---------------------------------------------------------------------------
 
