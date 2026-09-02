@@ -25,6 +25,8 @@ import {
 import { BadRequestError, NotFoundError, AppError } from '../lib/errors.js';
 import { LogService } from '../services/logService.js';
 import { logger } from '../lib/logger.js';
+import { renderHtml } from './renderers/html.js';
+import { renderPrintHtml } from './renderers/print.js';
 
 const NOT_IMPLEMENTED_STATUS = 501;
 
@@ -128,7 +130,9 @@ export const DocumentService = {
         const data = await this.getData(type, params, { user });
 
         if (format === OUTPUT_FORMATS.HTML || format === OUTPUT_FORMATS.PRINT) {
-            const html = renderPlaceholderHtml(entry, data, format);
+            const html = format === OUTPUT_FORMATS.PRINT
+                ? renderPrintHtml(type, data, { autoPrint: false })
+                : renderHtml(type, data);
             await this._audit(type, params, user, format, data);
             return {
                 body: html,
@@ -176,38 +180,6 @@ export const DocumentService = {
         }
     },
 };
-
-/**
- * Minimal placeholder HTML so the preview endpoint is exercisable in S1.
- * S10 replaces this with the real per-type HTML template.
- */
-function renderPlaceholderHtml(entry, data, format) {
-    const title = data?.branding?.companyName || 'Jammaz';
-    const docTitle = data?.title || entry.labelAr;
-    const rowsSummary = Array.isArray(data?.rows) ? `${data.rows.length} سطر` : '';
-    return `<!doctype html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="utf-8" />
-<title>${docTitle} — ${title}</title>
-<style>
-  body { font-family: system-ui, "Segoe UI", Arial, sans-serif; margin: 2rem; color: #1f2937; }
-  h1 { color: ${data?.branding?.primaryColor || '#1B3C73'}; }
-  .meta { color: #6b7280; font-size: 0.9rem; margin-bottom: 1.5rem; }
-  .placeholder { padding: 1.5rem; border: 1px dashed #cbd5e1; border-radius: 0.75rem; background: #f8fafc; }
-  code { background: #e2e8f0; padding: 0.1rem 0.35rem; border-radius: 0.25rem; }
-</style>
-</head>
-<body>
-  <h1>${docTitle}</h1>
-  <div class="meta">${title} — نوع المستند: <code>${entry.id}</code> — صيغة: <code>${format}</code> — ${rowsSummary}</div>
-  <div class="placeholder">
-    <p>هذه معاينة مؤقتة للمستند. القالب الفعلي يُسلَّم في Sprint 10 (محرك التصدير) وSprint 11 (PDF / طباعة).</p>
-    <p>تم تحميل البيانات بنجاح — عدد السجلات: <strong>${rowsSummary || '—'}</strong></p>
-  </div>
-</body>
-</html>`;
-}
 
 /**
  * DOC-ENG-003 — DocumentController (express glue).
