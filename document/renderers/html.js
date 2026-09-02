@@ -338,6 +338,193 @@ RENDERERS[DOCUMENT_TYPES.SALE_INVOICE] = function renderSaleInvoice(data) {
 };
 
 // ---------------------------------------------------------------------------
+// CUSTOMER_COLLECTION_RECEIPT
+// ---------------------------------------------------------------------------
+
+RENDERERS[DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT] = function renderCustomerCollectionReceipt(data) {
+    const {
+        branding = {},
+        title = 'سند تحصيل من عميل',
+        receiptNumber = '',
+        date = '',
+        time = '',
+        status = 'مدفوع',
+        customer = {},
+        transaction = {},
+        previousBalance = 0,
+        remainingBalance = 0,
+        collectedAmount = 0,
+        payment = {},
+    } = data || {};
+
+    const sourceRow = payment.isElectronic ? `
+        <div class="info-row"><span class="label">رقم التحويل</span><span class="value mono">${esc(payment.sourceNumber || '—')}</span></div>
+    ` : '';
+
+    const body = `<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>${esc(title)} — ${esc(branding.companyName || '')}</title>
+<style>
+    :root {
+        --primary: ${esc(branding.primaryColor || '#1B3C73')};
+        --header-bg: ${esc(branding.headerBgColor || '#1B3C73')};
+    }
+    * { box-sizing: border-box; }
+    body {
+        font-family: "Segoe UI", system-ui, Arial, sans-serif;
+        margin: 0; padding: 32px; color: #1f2937; background: #fff;
+    }
+    .doc { max-width: 800px; margin: 0 auto; }
+    .header {
+        display: flex; justify-content: space-between; align-items: flex-start; gap: 24px;
+        padding-bottom: 16px; border-bottom: 2px solid var(--primary); margin-bottom: 24px;
+    }
+    .brand h1 { font-size: 24px; margin: 0; color: var(--primary); }
+    .brand .meta { color: #6b7280; font-size: 12px; margin-top: 4px; }
+    .brand .contacts { color: #6b7280; font-size: 11px; margin-top: 8px; line-height: 1.6; }
+    .title-box {
+        background: var(--primary); color: #fff; padding: 6px 16px;
+        border-radius: 6px 6px 0 0; font-weight: 700; text-align: center;
+    }
+    .meta-box {
+        border: 1px solid #e5e7eb; border-top: 0;
+        border-radius: 0 0 6px 6px; padding: 12px; text-align: center; min-width: 220px;
+    }
+    .meta-box .num { font-family: ui-monospace, Menlo, monospace; font-size: 18px; font-weight: 700; color: var(--primary); }
+    .meta-box .when { color: #6b7280; font-size: 11px; margin-top: 4px; }
+    .meta-box .badge { display: inline-block; margin-top: 8px; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .badge-paid { background: #d1fae5; color: #065f46; }
+    .info-grid {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+        background: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;
+    }
+    .info-grid h3 { margin: 0 0 8px; color: var(--primary); font-size: 14px; }
+    .info-row { display: flex; justify-content: space-between; padding: 4px 0; }
+    .info-row .label { color: #6b7280; }
+    .info-row .value { font-weight: 600; }
+    .info-row .value.mono { font-family: ui-monospace, Menlo, monospace; }
+    .amount-box {
+        background: var(--primary); color: #fff; padding: 24px;
+        border-radius: 12px; margin-bottom: 16px; text-align: center;
+        position: relative; overflow: hidden;
+    }
+    .amount-box .label { display: block; font-size: 12px; opacity: 0.85; margin-bottom: 6px; }
+    .amount-box .amount {
+        font-family: ui-monospace, Menlo, monospace; font-size: 36px; font-weight: 700;
+        letter-spacing: -0.5px;
+    }
+    .amount-box .currency { font-size: 18px; opacity: 0.9; margin-inline-start: 6px; }
+    .amount-box .method { margin-top: 12px; font-size: 12px; opacity: 0.95; }
+    .balance-grid {
+        display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px;
+    }
+    .balance-card {
+        background: #f9fafb; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid #e5e7eb;
+    }
+    .balance-card .label { color: #6b7280; font-size: 11px; font-weight: 700; }
+    .balance-card .value { font-family: ui-monospace, Menlo, monospace; font-size: 18px; font-weight: 700; margin-top: 4px; color: var(--primary); }
+    .balance-card.remaining .value { color: #b91c1c; }
+    .description-block {
+        background: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 16px;
+        border-inline-start: 4px solid var(--primary);
+    }
+    .description-block .label { color: #6b7280; font-size: 11px; font-weight: 700; margin-bottom: 4px; }
+    .description-block .text { font-size: 14px; font-weight: 600; }
+    .footer {
+        margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb;
+        text-align: center; font-size: 12px; color: #6b7280;
+    }
+    .footer .msg { font-weight: 700; color: var(--primary); margin-bottom: 4px; }
+    @media print {
+        @page { size: A4; margin: 20mm; }
+        body { padding: 0; }
+    }
+</style>
+</head>
+<body>
+<div class="doc" data-document-type="customer-collection-receipt">
+    <header class="header">
+        <div class="brand">
+            <h1>${esc(branding.companyName || 'شركتكم')}</h1>
+            ${branding.address ? `<div class="meta">${esc(branding.address)}</div>` : ''}
+            ${(branding.phone || (branding.additionalPhones && branding.additionalPhones.length))
+                ? `<div class="contacts">${esc([branding.phone, ...(branding.additionalPhones || [])].filter(Boolean).join(' — '))}</div>`
+                : ''}
+            ${branding.email ? `<div class="contacts">${esc(branding.email)}</div>` : ''}
+        </div>
+        <div>
+            <div class="title-box">${esc(title)}</div>
+            <div class="meta-box">
+                <div class="num">${esc(receiptNumber)}</div>
+                <div class="when">${esc(date)}${time ? ` — ${esc(time)}` : ''}</div>
+                ${status ? `<span class="badge badge-paid">${esc(status)}</span>` : ''}
+            </div>
+        </div>
+    </header>
+
+    <section class="info-grid">
+        <div>
+            <h3>بيانات العميل</h3>
+            <div class="info-row"><span class="label">الاسم</span><span class="value">${esc(customer.name || '—')}</span></div>
+            ${customer.phone ? `<div class="info-row"><span class="label">الهاتف</span><span class="value mono">${esc(customer.phone)}</span></div>` : ''}
+            ${customer.taxNumber ? `<div class="info-row"><span class="label">الرقم الضريبي</span><span class="value mono">${esc(customer.taxNumber)}</span></div>` : ''}
+            ${customer.address ? `<div class="info-row"><span class="label">العنوان</span><span class="value">${esc(customer.address)}</span></div>` : ''}
+        </div>
+        <div>
+            <h3>تفاصيل التحصيل</h3>
+            <div class="info-row"><span class="label">طريقة الدفع</span><span class="value">${esc(payment.methodLabel || '—')}</span></div>
+            <div class="info-row"><span class="label">القناة</span><span class="value">${esc(payment.channelLabel || '—')}</span></div>
+            ${sourceRow}
+            <div class="info-row"><span class="label">مرجع العملية</span><span class="value">${esc(transaction.referenceTypeLabel || '')}${transaction.referenceNumber ? ` — ${esc(transaction.referenceNumber)}` : ''}</div>
+            <div class="info-row"><span class="label">محرر السند</span><span class="value">${esc(transaction.createdBy || 'النظام')}</span></div>
+        </div>
+    </section>
+
+    <section class="amount-box">
+        <span class="label">المبلغ المستلم</span>
+        <div>
+            <span class="amount">${fmtMoney(collectedAmount)}</span>
+            <span class="currency">ج.م</span>
+        </div>
+        <div class="method">${esc(payment.methodLabel || '')}${payment.channelLabel ? ` — ${esc(payment.channelLabel)}` : ''}</div>
+    </section>
+
+    <section class="balance-grid">
+        <div class="balance-card">
+            <div class="label">الرصيد السابق</div>
+            <div class="value">${fmtMoney(previousBalance)} ج.م</div>
+        </div>
+        <div class="balance-card">
+            <div class="label">المبلغ المحصل</div>
+            <div class="value">${fmtMoney(collectedAmount)} ج.م</div>
+        </div>
+        <div class="balance-card remaining">
+            <div class="label">الرصيد المتبقي</div>
+            <div class="value">${fmtMoney(remainingBalance)} ج.م</div>
+        </div>
+    </section>
+
+    ${transaction.description ? `
+    <section class="description-block">
+        <div class="label">وذلك عن / البيان</div>
+        <div class="text">${esc(transaction.description)}</div>
+    </section>
+    ` : ''}
+
+    <footer class="footer">
+        <p class="msg">${esc(branding.footerText || 'شكراً لتعاملكم')}</p>
+        <p>تم إصدار هذا السند إلكترونياً</p>
+    </footer>
+</div>
+</body>
+</html>`;
+
+    return body;
+};
+
+// ---------------------------------------------------------------------------
 // Safe placeholder for not-yet-implemented types
 // ---------------------------------------------------------------------------
 
@@ -363,7 +550,6 @@ function nextSprintFor(type) {
     // Mapping for the placeholder text only; the real templates land
     // in their respective sprints.
     const map = {
-        CUSTOMER_COLLECTION_RECEIPT: '4',
         CUSTOMER_ACCOUNT_STATEMENT: '5',
         PURCHASE_INVOICE: '6',
         SUPPLIER_PAYMENT_RECEIPT: '7',
