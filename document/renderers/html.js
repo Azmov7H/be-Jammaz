@@ -338,6 +338,179 @@ RENDERERS[DOCUMENT_TYPES.SALE_INVOICE] = function renderSaleInvoice(data) {
 };
 
 // ---------------------------------------------------------------------------
+// PURCHASE_INVOICE
+// ---------------------------------------------------------------------------
+
+RENDERERS[DOCUMENT_TYPES.PURCHASE_INVOICE] = function renderPurchaseInvoice(data) {
+    const {
+        branding = {},
+        title = 'فاتورة مشتريات',
+        number = '',
+        date = '',
+        time = '',
+        status = '',
+        paymentStatusLabel = '',
+        supplier = {},
+        purchaseOrder = {},
+        items = [],
+        totals = {},
+        payment = {},
+    } = data || {};
+
+    const sub = Number(totals.subtotal || 0);
+    const tax = Number(totals.tax || 0);
+    const total = Number(totals.total || 0);
+    const paid = Number(totals.paidAmount || 0);
+    const remaining = Number(totals.remaining || 0);
+    const dueDate = payment?.dueDate || '';
+
+    const sourceRow = payment?.sourceNumber
+        ? `<div class="info-row"><span class="label">مرجع التحويل</span><span class="value mono">${esc(payment.sourceNumber)}</span></div>`
+        : '';
+
+    return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>${esc(title)} — ${esc(number)}</title>
+<style>
+    :root { --primary: ${branding.primaryColor || '#1B3C73'}; --header-bg: ${branding.headerBgColor || '#1B3C73'}; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Cairo', 'Tahoma', sans-serif; padding: 24px; color: #1f2937; background: #f9fafb; margin: 0; }
+    .doc { background: #fff; max-width: 210mm; margin: 0 auto; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 3px solid var(--primary); margin-bottom: 24px; }
+    .header .brand h1 { margin: 0; font-size: 22px; color: var(--primary); }
+    .header .meta { color: #6b7280; font-size: 12px; margin-top: 4px; }
+    .header .contacts { color: #6b7280; font-size: 12px; margin-top: 2px; }
+    .header .title-box { background: var(--primary); color: #fff; padding: 8px 18px; border-radius: 6px; font-weight: 700; font-size: 16px; display: inline-block; }
+    .header .meta-box { text-align: start; margin-top: 8px; font-size: 13px; }
+    .header .num { font-weight: 700; font-size: 16px; color: var(--primary); }
+    .header .when { color: #6b7280; font-size: 12px; margin-top: 2px; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; margin-top: 4px; }
+    .badge-paid { background: #d1fae5; color: #065f46; }
+    .badge-partial { background: #fef3c7; color: #92400e; }
+    .badge-pending { background: #fee2e2; color: #991b1b; }
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+    .info-grid h3 { margin: 0 0 8px; font-size: 12px; color: #6b7280; font-weight: 700; letter-spacing: 0.04em; }
+    .info-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed #e5e7eb; }
+    .info-row .label { color: #6b7280; }
+    .info-row .value { font-weight: 600; }
+    .info-row .value.mono { font-family: 'Cairo', monospace; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
+    th { background: var(--header-bg); color: #fff; padding: 10px 8px; text-align: start; font-weight: 700; font-size: 12px; }
+    th.num, td.num { text-align: end; }
+    td { padding: 8px; border-bottom: 1px solid #e5e7eb; }
+    td.mono { font-family: 'Cairo', monospace; }
+    tbody tr:nth-child(even) { background: #f9fafb; }
+    .totals { display: grid; grid-template-columns: 1fr 240px; gap: 16px; margin-bottom: 16px; }
+    .notes { background: #f9fafb; padding: 12px 16px; border-radius: 8px; font-size: 12px; }
+    .notes h4 { margin: 0 0 6px; color: #6b7280; font-size: 11px; font-weight: 700; }
+    .totals-card { background: #f3f4f6; padding: 14px 18px; border-radius: 8px; }
+    .totals-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+    .totals-row.muted { color: #6b7280; }
+    .totals-row.grand { border-top: 2px solid var(--primary); margin-top: 8px; padding-top: 10px; font-size: 16px; font-weight: 800; color: var(--primary); }
+    .totals-row.remaining { color: #b91c1c; font-weight: 700; }
+    .footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280; }
+    .footer .msg { font-weight: 700; color: var(--primary); margin-bottom: 4px; }
+    @media print {
+        @page { size: A4; margin: 14mm; }
+        body { padding: 0; background: #fff; }
+        .doc { box-shadow: none; padding: 0; }
+    }
+</style>
+</head>
+<body>
+<div class="doc" data-document-type="purchase-invoice">
+    <header class="header">
+        <div class="brand">
+            <h1>${esc(branding.companyName || 'شركتكم')}</h1>
+            ${branding.address ? `<div class="meta">${esc(branding.address)}</div>` : ''}
+            ${(branding.phone || (branding.additionalPhones && branding.additionalPhones.length))
+                ? `<div class="contacts">${esc([branding.phone, ...(branding.additionalPhones || [])].filter(Boolean).join(' — '))}</div>`
+                : ''}
+            ${branding.email ? `<div class="contacts">${esc(branding.email)}</div>` : ''}
+        </div>
+        <div>
+            <div class="title-box">${esc(title)}</div>
+            <div class="meta-box">
+                <div class="num">${esc(number)}</div>
+                <div class="when">${esc(date)}${time ? ` — ${esc(time)}` : ''}</div>
+                ${status ? `<span class="badge ${esc(badgeClass(status))}">${esc(status)}</span>` : ''}
+            </div>
+        </div>
+    </header>
+
+    <section class="info-grid">
+        <div>
+            <h3>بيانات المورد</h3>
+            <div class="info-row"><span class="label">الاسم</span><span class="value">${esc(supplier.name || '—')}</span></div>
+            ${supplier.phone ? `<div class="info-row"><span class="label">الهاتف</span><span class="value mono">${esc(supplier.phone)}</span></div>` : ''}
+            ${supplier.taxNumber ? `<div class="info-row"><span class="label">الرقم الضريبي</span><span class="value mono">${esc(supplier.taxNumber)}</span></div>` : ''}
+            ${supplier.address ? `<div class="info-row"><span class="label">العنوان</span><span class="value">${esc(supplier.address)}</span></div>` : ''}
+            ${supplier.balance ? `<div class="info-row"><span class="label">رصيد المورد الحالي</span><span class="value mono" style="color: #b91c1c;">${fmtMoney(supplier.balance)} ج.م</span></div>` : ''}
+        </div>
+        <div>
+            <h3>تفاصيل أمر الشراء</h3>
+            <div class="info-row"><span class="label">رقم الأمر</span><span class="value mono">${esc(number)}</span></div>
+            <div class="info-row"><span class="label">الحالة</span><span class="value">${esc(status || '—')}</span></div>
+            <div class="info-row"><span class="label">طريقة الدفع</span><span class="value">${esc(payment?.methodLabel || '—')}</span></div>
+            <div class="info-row"><span class="label">القناة</span><span class="value">${esc(payment?.channelLabel || '—')}</span></div>
+            ${sourceRow}
+            <div class="info-row"><span class="label">المحرر</span><span class="value">${esc(purchaseOrder?.createdBy || 'النظام')}</span></div>
+            ${dueDate ? `<div class="info-row"><span class="label">تاريخ الاستلام المتوقع</span><span class="value">${esc(dueDate)}</span></div>` : ''}
+        </div>
+    </section>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 40px;">م</th>
+                <th>المنتج</th>
+                <th style="width: 80px;">الكود</th>
+                <th style="width: 70px;" class="num">الكمية</th>
+                <th style="width: 110px;" class="num">سعر الوحدة</th>
+                <th style="width: 120px;" class="num">الإجمالي</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${items.length === 0
+                ? `<tr><td colspan="6" style="text-align:center; padding: 24px; color: #9ca3af;">لا توجد عناصر</td></tr>`
+                : items.map((it, i) => `
+                    <tr>
+                        <td>${i + 1}</td>
+                        <td>${esc(it.productName || '—')}</td>
+                        <td class="mono">${esc(it.productCode || '—')}</td>
+                        <td class="num mono">${fmtNum(it.qty)}</td>
+                        <td class="num mono">${fmtMoney(it.unitPrice)}</td>
+                        <td class="num mono"><strong>${fmtMoney(it.lineTotal)}</strong></td>
+                    </tr>
+                `).join('')}
+        </tbody>
+    </table>
+
+    <div class="totals">
+        <div>
+            ${purchaseOrder?.notes ? `<div class="notes"><h4>ملاحظات</h4>${esc(purchaseOrder.notes)}</div>` : ''}
+        </div>
+        <div class="totals-card">
+            <div class="totals-row muted"><span>الإجمالي قبل الضريبة</span><span class="mono">${fmtMoney(sub)} ج.م</span></div>
+            ${tax > 0 ? `<div class="totals-row muted"><span>الضريبة</span><span class="mono">${fmtMoney(tax)} ج.م</span></div>` : ''}
+            <div class="totals-row grand"><span>الإجمالي</span><span class="mono">${fmtMoney(total)} ج.م</span></div>
+            <div class="totals-row muted" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb;"><span>المدفوع</span><span class="mono">${fmtMoney(paid)} ج.م</span></div>
+            ${remaining > 0 ? `<div class="totals-row remaining"><span>المتبقي</span><span class="mono">${fmtMoney(remaining)} ج.م</span></div>` : ''}
+            ${paymentStatusLabel ? `<div class="totals-row" style="margin-top: 6px;"><span class="badge ${esc(badgeClass(paymentStatusLabel))}">${esc(paymentStatusLabel)}</span></div>` : ''}
+        </div>
+    </div>
+
+    <div class="footer">
+        <div class="msg">${esc(branding.footerText || 'شكراً لتعاملكم معنا')}</div>
+    </div>
+</div>
+</body>
+</html>`;
+};
+
+// ---------------------------------------------------------------------------
 // CUSTOMER_COLLECTION_RECEIPT
 // ---------------------------------------------------------------------------
 
