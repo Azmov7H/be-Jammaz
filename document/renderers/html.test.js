@@ -698,3 +698,113 @@ describe('renderHtml — SUPPLIER_PAYMENT_RECEIPT', () => {
         expect(html).toContain('&lt;script&gt;');
     });
 });
+
+function sampleSupplierStatement(overrides = {}) {
+    return {
+        type: 'supplier_statement',
+        title: 'كشف حساب مورد',
+        documentType: 'SUPPLIER_ACCOUNT_STATEMENT',
+        branding: {
+            companyName: 'مؤسستي',
+            primaryColor: '#1B3C73',
+            headerBgColor: '#1B3C73',
+            address: '', phone: '', additionalPhones: [],
+            email: '', website: '', footerText: 'شكراً',
+        },
+        supplier: {
+            id: OID,
+            name: 'مورد الأمل',
+            phone: '01098765432',
+            address: 'الجيزة',
+            taxNumber: 'T-SUP-1',
+            linkedCustomer: null,
+        },
+        period: {
+            startDate: '2026-08-01T00:00:00.000Z',
+            endDate: '2026-08-31T23:59:59.000Z',
+            days: 30,
+        },
+        openingBalance: 1500,
+        closingBalance: 2200,
+        currentSnapshotBalance: 2200,
+        balanceDelta: '0.00',
+        totals: { debits: 1000, credits: 300, net: 700 },
+        lines: [
+            { id: '1', type: 'PURCHASE_ORDER', reference: 'PO-1', label: 'أمر شراء #PO-1', description: '', debit: 1000, credit: 0, balance: 2500, dateFormatted: '2026-08-10T00:00:00.000Z', debitFormatted: '1000.00', creditFormatted: '0.00', balanceFormatted: '2500.00' },
+            { id: '2', type: 'PAYMENT', reference: 'EXP-1', label: 'سداد للمورد', description: '', debit: 0, credit: 300, balance: 2200, dateFormatted: '2026-08-15T00:00:00.000Z', debitFormatted: '0.00', creditFormatted: '300.00', balanceFormatted: '2200.00' },
+        ],
+        generatedAt: '2026-09-01T10:00:00.000Z',
+        generatedBy: 'Owner',
+        filters: { startDate: '2026-08-01T00:00:00.000Z', endDate: '2026-08-31T23:59:59.000Z' },
+        ...overrides,
+    };
+}
+
+describe('renderHtml — SUPPLIER_ACCOUNT_STATEMENT', () => {
+    it('renders the statement header + supplier block', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement());
+        expect(html).toContain('كشف حساب مورد');
+        expect(html).toContain('مورد الأمل');
+        expect(html).toContain('data-document-type="supplier-statement"');
+    });
+
+    it('shows the opening, total-debits, total-credits summary cards', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement());
+        expect(html).toContain('الرصيد الافتتاحي');
+        expect(html).toContain('إجمالي المدين');
+        expect(html).toContain('إجمالي الدائن');
+        expect(html).toContain('1,500.00');
+        expect(html).toContain('1,000.00');
+        expect(html).toContain('300.00');
+    });
+
+    it('shows the closing balance and current snapshot', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement());
+        expect(html).toContain('الرصيد الختامي');
+        expect(html).toContain('الرصيد المسجل بالنظام');
+    });
+
+    it('shows a reconciliation OK banner when balanceDelta is 0', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement({ balanceDelta: '0.00' }));
+        expect(html).toContain('الرصيد متطابق مع السجل');
+    });
+
+    it('shows a reconciliation WARN banner with the delta when balanceDelta is non-zero', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement({ balanceDelta: '150.50', currentSnapshotBalance: 2050 }));
+        expect(html).toContain('تنبيه: فرق تسوية');
+        expect(html).toContain('150.50');
+        expect(html).toContain('delta-banner warn');
+    });
+
+    it('renders one row per line and the running balance', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement());
+        expect(html).toContain('PO-1');
+        expect(html).toContain('EXP-1');
+        expect(html).toContain('2,500.00');
+        expect(html).toContain('2,200.00');
+    });
+
+    it('escapes XSS in supplier name and description', () => {
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement({
+            supplier: { id: OID, name: '<script>alert(1)</script>', phone: '', address: '', taxNumber: '', linkedCustomer: null },
+            lines: [
+                { id: '1', type: 'PURCHASE_ORDER', reference: 'X', label: '<img src=x>', description: 'bad', debit: 1, credit: 0, balance: 1, dateFormatted: '2026-08-10T00:00:00.000Z', debitFormatted: '1.00', creditFormatted: '0.00', balanceFormatted: '1.00' }
+            ]
+        }));
+        expect(html).not.toContain('<script>alert(1)</script>');
+        expect(html).not.toContain('<img src=x>');
+        expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('paginates long statements (multi-page)', () => {
+        const lines = Array.from({ length: 35 }, (_, i) => ({
+            id: String(i), type: 'PURCHASE_ORDER', reference: `PO-${i}`, label: `أمر شراء #${i}`,
+            description: '', debit: 100, credit: 0, balance: 1500 + (i + 1) * 100,
+            dateFormatted: '2026-08-10T00:00:00.000Z',
+            debitFormatted: '100.00', creditFormatted: '0.00', balanceFormatted: String(1500 + (i + 1) * 100)
+        }));
+        const html = renderHtml(DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT, sampleSupplierStatement({ lines }));
+        expect(html).toContain('صفحة 1 من 2');
+        expect(html).toContain('صفحة 2 من 2');
+    });
+});
