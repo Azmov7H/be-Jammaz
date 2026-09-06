@@ -162,4 +162,36 @@ describe('Treasury dashboard coherence', () => {
             .send({ type: 'customers', format: 'pdf', filters: {} });
         expect(res.status).toBe(400);
     });
+
+    it('same-day manual rows are visible under a date-only range', async () => {
+        // Exact user report: a manual deposit/withdrawal recorded today must
+        // appear in the list the same day (date-only endDate means the whole
+        // day, not 00:00).
+        const stamp = Date.now();
+        await request.post('/api/treasury/manual-income').set('Cookie', ownerCookie).send({
+            amount: 777, reason: `same-day-in-${stamp}`, method: 'cash',
+        }).expect(200);
+        await request.post('/api/treasury/manual-expense').set('Cookie', ownerCookie).send({
+            amount: 333, reason: `same-day-out-${stamp}`, category: 'other', method: 'cash',
+        }).expect(200);
+        const today = new Date().toISOString().split('T')[0];
+        const first = new Date();
+        first.setDate(1);
+        const start = first.toISOString().split('T')[0];
+
+        const ledger = await request
+            .get(`/api/treasury/transactions?startDate=${start}&endDate=${today}&limit=100`)
+            .set('Cookie', ownerCookie);
+        expect(ledger.status).toBe(200);
+        const descriptions = ledger.body.data.transactions.map((t) => t.description);
+        expect(descriptions).toContain(`same-day-in-${stamp}`);
+        expect(descriptions).toContain(`same-day-out-${stamp}`);
+
+        const flow = await request
+            .get(`/api/treasury/cashflow?startDate=${start}&endDate=${today}`)
+            .set('Cookie', ownerCookie);
+        expect(flow.status).toBe(200);
+        expect(flow.body.data.buckets.reduce((s, b) => s + b.income, 0)).toBeGreaterThanOrEqual(777);
+        expect(flow.body.data.buckets.reduce((s, b) => s + b.expense, 0)).toBeGreaterThanOrEqual(333);
+    });
 });

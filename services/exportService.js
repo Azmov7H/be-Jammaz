@@ -1,4 +1,5 @@
 import dbConnect from '../lib/db.js';
+import { endOfDayIfDateOnly } from '../lib/paginate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 
 /**
@@ -197,7 +198,7 @@ const MODULES = {
             if (filters.startDate || filters.endDate) {
                 q.date = {};
                 if (filters.startDate) q.date.$gte = new Date(filters.startDate);
-                if (filters.endDate) q.date.$lte = new Date(filters.endDate);
+                if (filters.endDate) q.date.$lte = new Date(endOfDayIfDateOnly(filters.endDate));
             }
             if (filters.type) q.type = filters.type;
             if (filters.method) q.method = filters.method;

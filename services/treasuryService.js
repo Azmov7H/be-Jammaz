@@ -1,6 +1,6 @@
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
 import TreasuryBalance from '../models/TreasuryBalance.js';
-import { boundedRange, MAX_LIMIT } from '../lib/paginate.js';
+import { boundedRange, endOfDayIfDateOnly, MAX_LIMIT } from '../lib/paginate.js';
 import CashboxDaily from '../models/CashboxDaily.js';
 import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
@@ -583,7 +583,10 @@ export const TreasuryService = {
     async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100, maxDays = 90, category = null } = {}) {
         // T-PERF-01: default 30d window, hard-capped. The cap is configurable
         // per-call (e.g. the dedicated history endpoint widens to 365 days).
-        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays });
+        // Day-scoped callers (the dashboard sends YYYY-MM-DD) mean the whole
+        // end day — otherwise rows created after 00:00 today are silently
+        // excluded from the list.
+        const range = boundedRange({ startDate, endDate: endOfDayIfDateOnly(endDate) }, { defaultDays: 30, maxDays });
 
         const isSupplier = category === 'supplier_payments';
         const isShop = category === 'shop_expenses';
@@ -824,7 +827,7 @@ export const TreasuryService = {
      * @returns {{ granularity: 'day'|'month', buckets: Array<{key:string,income:number,expense:number}> }}
      */
     async getCashFlow(startDate, endDate) {
-        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 365 });
+        const range = boundedRange({ startDate, endDate: endOfDayIfDateOnly(endDate) }, { defaultDays: 30, maxDays: 365 });
         const spanDays = (range.endDate.getTime() - range.startDate.getTime()) / 86400000;
         const granularity = spanDays > 60 ? 'month' : 'day';
 
