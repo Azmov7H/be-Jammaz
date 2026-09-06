@@ -51,7 +51,7 @@ async create(data, userId) {
             const { items, customerId, customerName, customerPhone, paymentType, tax = 0, dueDate, notes, sourceNumber, usedCreditBalance = 0 } = data;
 
             // 1. Calculate Totals & Validate Products
-            const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, customerId, session);
+            const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, session);
 
             const total = Number((subtotal + Number(tax)).toFixed(2));
             const profit = total - totalCost;
