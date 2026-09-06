@@ -58,7 +58,7 @@ router.get('/', routeHandler(async () => {
 router.get('/:type',
     validateParams(typeOnlyParamSchema),
     validate(formatQuerySchema, 'query'),
-    DocumentController.preview,
+    routeHandler((req, res) => DocumentController.preview(req, res)),
 );
 
 /**
@@ -67,7 +67,7 @@ router.get('/:type',
 router.get('/:type/:id',
     validateParams(idParamSchema),
     validate(formatQuerySchema, 'query'),
-    DocumentController.preview,
+    routeHandler((req, res) => DocumentController.preview(req, res)),
 );
 
 /**
@@ -77,7 +77,7 @@ router.get('/:type/:id',
 router.get('/:type/export',
     validateParams(typeOnlyParamSchema),
     validate(formatQuerySchema, 'query'),
-    DocumentController.export,
+    routeHandler((req, res) => DocumentController.export(req, res)),
 );
 
 /**
@@ -86,7 +86,7 @@ router.get('/:type/export',
 router.get('/:type/:id/export',
     validateParams(idParamSchema),
     validate(formatQuerySchema, 'query'),
-    DocumentController.export,
+    routeHandler((req, res) => DocumentController.export(req, res)),
 );
 
 /**
@@ -99,13 +99,13 @@ const postBodySchema = z.object({
 router.post('/:type/export',
     validateParams(typeOnlyParamSchema),
     validate(postBodySchema),
-    DocumentController.export,
+    routeHandler((req, res) => DocumentController.export(req, res)),
 );
 
 router.post('/:type/:id/export',
     validateParams(idParamSchema),
     validate(postBodySchema),
-    DocumentController.export,
+    routeHandler((req, res) => DocumentController.export(req, res)),
 );
 
 /**

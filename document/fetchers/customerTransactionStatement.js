@@ -79,7 +79,10 @@ function maskIt(value) {
     return `•••• ${s.slice(-4)}`;
 }
 
-export async function fetch({ customerId, startDate, endDate, type, user }) {
+export async function fetch({ id, customerId, startDate, endDate, type, user }) {
+    // The document engine passes the route param as `id`; accept the
+    // explicit customerId too so direct callers keep working.
+    customerId = customerId ?? id;
     if (!isValidObjectId(customerId)) {
         throw new NotFoundError('Customer not found');
     }

@@ -222,6 +222,52 @@ export const DailySalesService = {
         await dailySales.save({ session });
         return dailySales;
     },
+
+    /**
+     * Roll a (possibly partial) sales return back out of the invoice's
+     * daily rollup. The invoice row stays — only amounts move.
+     */
+    async reverseReturn(invoice, returnItems, totalRefund, totalCostReturned, costOf, userId, session = null) {
+        const startOfDay = new Date(invoice.date);
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const dailySales = await DailySales.findOne({ date: startOfDay }).session(session);
+        if (!dailySales) return null;
+
+        dailySales.totalRevenue -= totalRefund;
+        dailySales.totalCost -= (totalCostReturned || 0);
+        dailySales.itemsSold -= returnItems.reduce((sum, r) => sum + Number(r.qty), 0);
+
+        for (const r of returnItems) {
+            if (!r.productId) continue;
+            const pid = toIdString(r.productId);
+            const existingProduct = dailySales.topProducts.find(
+                p => p.productId && toIdString(p.productId) === pid
+            );
+            if (existingProduct) {
+                const refund = Number(r.qty) * Number(r.unitPrice);
+                existingProduct.quantitySold -= Number(r.qty);
+                existingProduct.revenue -= refund;
+                if (existingProduct.quantitySold <= 0) {
+                    dailySales.topProducts = dailySales.topProducts.filter(
+                        p => toIdString(p.productId) !== pid
+                    );
+                }
+            }
+        }
+
+        if (invoice.paymentType === 'credit') {
+            dailySales.creditSales = (dailySales.creditSales || 0) - totalRefund;
+        } else {
+            dailySales.cashReceived -= totalRefund;
+        }
+
+        dailySales.topProducts.sort((a, b) => b.revenue - a.revenue);
+        dailySales.updatedBy = userId;
+
+        await dailySales.save({ session });
+        return dailySales;
+    },
 };
 
 

@@ -3,7 +3,7 @@ import { parsePagination } from '../lib/paginate.js';
 import { withTransaction } from '../utils/dbUtils.js';
 import Product from '../models/Product.js';
 import { StockService } from './stockService.js';
-// import { AccountingService } from './accountingService.js';
+import { AccountingService } from './accountingService.js';
 import { LogService } from './logService.js';
 import { UserRepository } from '../repositories/userRepository.js';
 import bcrypt from 'bcryptjs';
@@ -223,6 +223,10 @@ export const PhysicalInventoryService = {
                     adjustments.push(adjustment);
                 }
             }
+
+            // General ledger — shortage/surplus vs inventory, same txn.
+            // createInventoryAdjustmentEntries is a no-op when valueImpact is 0.
+            await AccountingService.createInventoryAdjustmentEntries(count, userId, session);
 
             return {
                 count,

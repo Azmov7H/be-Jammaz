@@ -87,6 +87,16 @@ export const SaleService = {
             // 4. Daily Sales & Stats
             await DailySalesService.updateDailySales(invoice, userId, session);
 
+            // 4b. General ledger — revenue + COGS, same transaction.
+            // Credit sales hit Receivables (cash follows on collection via
+            // createPaymentEntries); all other types hit Cash/Bank now.
+            const { AccountingService } = await import('../accountingService.js');
+            if (invoice.paymentType === 'credit') {
+                await AccountingService.createCreditSaleEntries(invoice, userId, session);
+            } else {
+                await AccountingService.createSaleEntries(invoice, userId, session);
+            }
+
             if (invoice.customer) {
                 await Customer.findByIdAndUpdate(invoice.customer, {
                     $inc: { totalPurchases: invoice.total },

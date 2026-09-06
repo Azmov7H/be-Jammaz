@@ -32,7 +32,13 @@ export const ExpenseService = {
                 sourceNumber // FIN-SVC-003 (Sprint 3)
             );
 
-            // 2. Logging
+            // 2. General ledger — expense entry (single doc, no txn in this flow)
+            const { AccountingService } = await import('../accountingService.js');
+            await AccountingService.createExpenseEntry(
+                parseFloat(amount), category, reason, userId, new Date(date)
+            );
+
+            // 3. Logging
             await LogService.logAction({
                 userId,
                 action: 'CREATE_EXPENSE',

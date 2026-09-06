@@ -81,6 +81,14 @@ export const PaymentService = {
             }
 
             const tx = await TreasuryService.recordPaymentCollection(invoice, amount, userId, method, note, meta, session, sourceNumber);
+
+            // General ledger — cash vs receivables. Only for credit sales:
+            // non-credit sales already debited cash at sale time.
+            if (invoice.paymentType === 'credit') {
+                const { AccountingService } = await import('../accountingService.js');
+                await AccountingService.createPaymentEntries(invoice, amount, userId, new Date(), session, method);
+            }
+
             return { invoice, transaction: tx };
         }));
     },
@@ -170,6 +178,21 @@ export const PaymentService = {
                 sourceNumber
             );
 
+            // General ledger — one PAYMENT entry (cash vs receivables) per
+            // invoice-linked debt paid. Manual (non-invoice) debts carry no
+            // invoice ref, so they are treasury-only.
+            const { AccountingService } = await import('../accountingService.js');
+            const paidInvoiceIds = appliedPayments
+                .filter(p => p.debtId && activeDebts.find(d => String(d._id) === String(p.debtId) && d.referenceType === 'Invoice'))
+                .map(p => {
+                    const d = activeDebts.find(x => String(x._id) === String(p.debtId));
+                    return { invoiceId: d.referenceId, amount: p.amountApplied };
+                });
+            for (const { invoiceId, amount: paid } of paidInvoiceIds) {
+                const inv = await Invoice.findById(invoiceId).session(session);
+                if (inv) await AccountingService.createPaymentEntries(inv, paid, userId, new Date(), session, method);
+            }
+
             return { success: true, transaction: tx, appliedPayments };
         }));
     },
@@ -241,6 +264,13 @@ export const PaymentService = {
                 session,
                 sourceNumber
             );
+
+            // General ledger — payables vs cash. Only for credit POs:
+            // cash POs already credited cash at receive time.
+            if (updatedPo.paymentType === 'credit') {
+                const { AccountingService } = await import('../accountingService.js');
+                await AccountingService.createSupplierPaymentEntries(updatedPo, amount, userId, new Date(), session, method);
+            }
 
             return updatedPo;
         }));

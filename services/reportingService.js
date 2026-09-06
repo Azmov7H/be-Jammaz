@@ -128,11 +128,11 @@ export const ReportingService = {
                     as: 'customerDetails'
                 }
             },
-            { $unwind: '$customerDetails' },
+            { $unwind: { path: '$customerDetails', preserveNullAndEmptyArrays: true } },
             {
                 $project: {
                     _id: 1,
-                    customerName: '$customerDetails.name',
+                    customerName: { $ifNull: ['$customerDetails.name', 'مبيعات نقدية (بدون عميل)'] },
                     totalRevenue: 1,
                     totalProfit: 1,
                     invoiceCount: 1,

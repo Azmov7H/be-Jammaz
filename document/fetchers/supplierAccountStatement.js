@@ -99,7 +99,10 @@ async function getOpeningBalance(supplierId, startDate) {
     return open + preDebits - preCredits + preRefunds;
 }
 
-export async function fetch({ supplierId, startDate, endDate, user }) {
+export async function fetch({ id, supplierId, startDate, endDate, user }) {
+    // The document engine passes the route param as `id`; accept the
+    // explicit supplierId too so direct callers keep working.
+    supplierId = supplierId ?? id;
     if (!isValidObjectId(supplierId)) {
         throw new NotFoundError('Supplier not found');
     }

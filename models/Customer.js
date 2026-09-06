@@ -21,6 +21,10 @@ const CustomerSchema = new mongoose.Schema({
         type: Number,
         default: 0
     },
+    totalRefunded: {
+        type: Number,
+        default: 0
+    },
     creditLimit: { type: Number, default: 0, min: 0 }, // T-DB-02
 
     isActive: { type: Boolean, default: true },

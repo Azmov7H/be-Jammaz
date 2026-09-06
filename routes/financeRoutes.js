@@ -1,6 +1,7 @@
 import express from 'express';
 import { FinanceService } from '../services/financeService.js';
 import { DebtService } from '../services/financial/debtService.js';
+import { RefundService } from '../services/financial/refundService.js';
 import { TreasuryService } from '../services/treasuryService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { maskSourceInResult, maskDocSource } from '../lib/pii.js';
@@ -44,6 +45,19 @@ router.post('/payments/debt', roleMiddleware(['owner', 'manager']), validate(deb
     const { debt, amount, method, note, sourceNumber } = req.body;
     return await FinanceService.recordManualDebtPayment(debt, amount, method, note, req.user._id, sourceNumber);
 }));
+
+// Refund a customer's credit balance (cash out): manager+ money path
+router.post('/refunds/customer-credit/:customerId',
+    roleMiddleware(['owner', 'manager']),
+    validateParams(z.object({ customerId: idSchema })),
+    validate(z.object({ amount: money, method, note, sourceNumber: sourceNumberSchema })),
+    routeHandler(async (req) => {
+        const { amount, method, note } = req.body;
+        return await RefundService.refundCustomerCredit(
+            req.params.customerId, amount, method, note, req.user._id
+        );
+    })
+);
 
 // Process a sales return
 router.post('/returns', roleMiddleware(['owner', 'manager']), validate(saleReturnSchema), routeHandler(async (req) => {

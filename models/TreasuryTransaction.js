@@ -56,6 +56,14 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
+    },
+    // Free-form audit context (e.g. { isCreditRefund: true, debtId }).
+    // Mixed (not Map) so .lean() reads stay plain objects. Several
+    // services already pass meta — without this field strict mode
+    // silently dropped it.
+    meta: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
     }
 }, { timestamps: true });
 

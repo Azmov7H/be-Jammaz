@@ -89,7 +89,10 @@ async function getOpeningBalance(customerId, startDate) {
     return open + preDebits - preCredits + preRefunds;
 }
 
-export async function fetch({ customerId, startDate, endDate, user }) {
+export async function fetch({ id, customerId, startDate, endDate, user }) {
+    // The document engine passes the route param as `id`; accept the
+    // explicit customerId too so direct callers keep working.
+    customerId = customerId ?? id;
     if (!isValidObjectId(customerId)) {
         throw new NotFoundError('Customer not found');
     }

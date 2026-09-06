@@ -50,8 +50,16 @@ async create(data, userId) {
         return await withTransaction(async (session) => {
             const { items, customerId, customerName, customerPhone, paymentType, tax = 0, dueDate, notes, sourceNumber, usedCreditBalance = 0 } = data;
 
-            // 1. Calculate Totals & Validate Products
-            const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, session);
+            // 1. Load customer first: item prices are validated against the
+            // server-resolved price (custom > tier > retail), never trusted
+            // from the client (T1b).
+            const invoiceCustomer = customerId
+                ? await Customer.findById(customerId).session(session)
+                : null;
+            if (customerId && !invoiceCustomer) throw new NotFoundError('العميل غير موجود');
+
+            // 2. Calculate Totals & Validate Products (+ prices)
+            const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, session, invoiceCustomer);
 
             const total = Number((subtotal + Number(tax)).toFixed(2));
             const profit = total - totalCost;
@@ -107,7 +115,24 @@ async create(data, userId) {
      * Internal helper to process and validate items
      * @private
      */
-    async _processInvoiceItems(items, session) {
+    /**
+     * Server-resolved sell price for one product/customer pair.
+     * Priority mirrors PricingService.getPrice: custom > tier > retail.
+     */
+    _resolveServerPrice(product, customer) {
+        if (customer) {
+            const custom = customer.getPriceForProduct
+                ? customer.getPriceForProduct(product._id)
+                : null;
+            if (custom !== null && custom !== undefined) return Number(custom);
+            const tier = customer.priceType || 'retail';
+            if (tier === 'wholesale' && product.wholesalePrice != null) return Number(product.wholesalePrice);
+            if (tier === 'special' && product.specialPrice != null) return Number(product.specialPrice);
+        }
+        return Number(product.retailPrice);
+    },
+
+    async _processInvoiceItems(items, session, customer = null) {
         let subtotal = 0;
         let totalCost = 0;
         const processedItems = [];
@@ -126,6 +151,7 @@ async create(data, userId) {
             let costPrice = item.buyPrice || 0;
             let productId = item.productId;
             const isService = !!item.isService || !productId;
+            let unitPrice = Number(item.unitPrice);
 
             if (productId && !isService) {
                 const pid = toIdString(productId);
@@ -134,9 +160,19 @@ async create(data, userId) {
 
                 productName = product.name;
                 costPrice = product.buyPrice || 0;
+
+                // T1b: client price must equal the server-resolved price.
+                const serverPrice = this._resolveServerPrice(product, customer);
+                if (!Number.isFinite(unitPrice) || Math.abs(unitPrice - serverPrice) > 0.005) {
+                    throw new AppError(
+                        `السعر المرسل (${item.unitPrice}) لا يطابق سعر النظام (${serverPrice}) للمنتج: ${productName}`,
+                        400
+                    );
+                }
+                unitPrice = serverPrice;
             }
 
-            const itemTotal = Number((item.qty * item.unitPrice).toFixed(2));
+            const itemTotal = Number((item.qty * unitPrice).toFixed(2));
             const lineCost = Number((item.qty * costPrice).toFixed(2));
             const lineProfit = itemTotal - lineCost;
 
@@ -147,7 +183,7 @@ async create(data, userId) {
                 productId: isService ? undefined : productId,
                 productName,
                 qty: item.qty,
-                unitPrice: item.unitPrice,
+                unitPrice,
                 source: item.source || 'shop',
                 isService,
                 total: itemTotal,

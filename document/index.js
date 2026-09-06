@@ -141,7 +141,18 @@ export const DocumentService = {
             };
         }
 
-        // S10 territory: pdf / xlsx / csv renderers.
+        if (format === OUTPUT_FORMATS.PDF) {
+            const { render: renderFormat } = await import('./renderers/index.js');
+            const pdf = await renderFormat('pdf', type, data);
+            await this._audit(type, params, user, format, data);
+            return {
+                body: pdf,
+                contentType: 'application/pdf',
+                filename: `${entry.id}.pdf`,
+            };
+        }
+
+        // xlsx / csv renderers are still unimplemented.
         throw new NotImplementedError(
             `renderer for ${entry.id} (${format}) is not yet implemented`
         );

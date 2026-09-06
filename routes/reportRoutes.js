@@ -3,6 +3,8 @@ import { DashboardService } from '../services/dashboardService.js';
 import { ReportingService } from '../services/reportingService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
+import { validate } from '../lib/validate.js';
+import { z } from 'zod';
 
 const router = express.Router();
 
@@ -39,6 +41,16 @@ router.get('/reports/sales', routeHandler(async (req) => {
 router.get('/reports/shortage', routeHandler(async (req) => {
     const { status } = req.query;
     return await ReportingService.getShortageReports(status === 'ALL' ? null : status);
+}));
+
+router.post('/reports/shortage', validate(z.object({
+    productId: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid MongoDB ID').optional(),
+    productName: z.string().min(1).max(200),
+    requestedQty: z.coerce.number().min(1).max(1e6),
+    availableQty: z.coerce.number().min(0).max(1e6),
+    notes: z.string().max(1000).optional()
+})), routeHandler(async (req) => {
+    return await ReportingService.createShortageReport(req.body, req.user._id, req.user.name);
 }));
 
 

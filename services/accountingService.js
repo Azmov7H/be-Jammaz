@@ -243,7 +243,8 @@ export const AccountingService = {
                 refType: 'PhysicalInventory',
                 refId: physicalInventory._id,
                 userId,
-                date: physicalInventory.approvedAt || physicalInventory.date
+                date: physicalInventory.approvedAt || physicalInventory.date,
+                session
             });
             entries.push(entry);
         }

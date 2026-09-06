@@ -21,6 +21,27 @@ import { NotFoundError } from '../../lib/errors.js';
  */
 export const ReturnService = {
     /**
+     * Paginated list of all sales returns (powers GET /api/sales-returns).
+     */
+    async getAllReturns({ page = 1, limit = 50 } = {}) {
+        await dbConnect();
+        const skip = (Math.max(1, Number(page)) - 1) * Math.max(1, Math.min(200, Number(limit)));
+        const perPage = Math.max(1, Math.min(200, Number(limit)));
+        const [returns, count] = await Promise.all([
+            SalesReturn.find({})
+                .populate('originalInvoice', 'number')
+                .populate('items.productId', 'name')
+                .populate('createdBy', 'name')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(perPage)
+                .lean(),
+            SalesReturn.countDocuments({})
+        ]);
+        return { returns, count, page: Number(page), limit: perPage };
+    },
+
+    /**
      * Get all returns for a specific invoice
      */
     async getReturnsByInvoice(invoiceId) {
@@ -74,6 +95,27 @@ export const ReturnService = {
         return withTransaction(async (session) => {
             const { returnItems, totalRefund } = returnData;
 
+            // Capture pre-rewrite unit costs so the GL reversal and the
+            // daily-sales rollback use historical costs.
+            const costByItemId = new Map(
+                invoice.items.map(i => [toIdString(i._id), Number(i.costPrice || 0)])
+            );
+            const costByProductId = new Map(
+                invoice.items.filter(i => i.productId).map(i => [toIdString(i.productId), Number(i.costPrice || 0)])
+            );
+            const costOf = (retItem) => {
+                if (retItem.invoiceItemId && costByItemId.has(toIdString(retItem.invoiceItemId))) {
+                    return costByItemId.get(toIdString(retItem.invoiceItemId));
+                }
+                if (retItem.productId && costByProductId.has(toIdString(retItem.productId))) {
+                    return costByProductId.get(toIdString(retItem.productId));
+                }
+                return 0;
+            };
+            const totalCostReturned = returnItems.reduce(
+                (sum, r) => sum + Number(r.qty) * costOf(r), 0
+            );
+
             // 1. Update Original Invoice items
             invoice.items = invoice.items.map(invItem => {
                 const retItem = returnItems.find(r =>
@@ -109,7 +151,9 @@ export const ReturnService = {
 
             faultInject('processSaleReturn:afterInvoice');
 
-            // 2. Create SalesReturn document
+            // 2. Create SalesReturn document (type mirrors refundMethod for
+            // the GL reversal: cash refunds hit Cash, everything else hits
+            // Receivables).
             const salesReturn = await SalesReturn.create([{
                 returnNumber: await nextDocumentNumber('RET'),
                 originalInvoice: invoice._id,
@@ -117,6 +161,7 @@ export const ReturnService = {
                 items: returnItems,
                 totalRefund,
                 refundMethod,
+                type: refundMethod === 'cash' ? 'cash' : 'credit',
                 customerBalanceAdded: refundMethod === 'customerBalance' ? totalRefund : 0,
                 treasuryDeducted: refundMethod === 'cash' ? totalRefund : 0,
                 createdBy: userId
@@ -147,6 +192,16 @@ export const ReturnService = {
                     await customer.save({ session });
                 }
             }
+
+            // 5. General ledger — contra-revenue + inventory/cost reversal,
+            // same transaction.
+            const { AccountingService } = await import('../accountingService.js');
+            await AccountingService.createReturnEntries(salesReturnDoc, totalCostReturned, userId, session);
+
+            // 6. Roll the returned amounts back out of the daily-sales rollup
+            // (the invoice stays, only its rewritten totals remain).
+            const { DailySalesService } = await import('../dailySalesService.js');
+            await DailySalesService.reverseReturn(invoice, returnItems, totalRefund, totalCostReturned, costOf, userId, session);
 
             return { salesReturn: salesReturnDoc, invoice };
         });

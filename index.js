@@ -29,6 +29,7 @@ import settingsRoutes from './routes/settingsRoutes.js';
 import partyRoutes from './routes/partyRoutes.js';
 import exportRoutes from './routes/exportRoutes.js';
 import documentRoutes from './routes/documentRoutes.js';
+import aliasRoutes from './routes/aliasRoutes.js';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
@@ -192,6 +193,8 @@ app.use('/api/export', heavyLimiter, exportRoutes);
 // heavyLimiter applies: every document generation hits the DB at minimum,
 // and many hit aggregations / PDF rendering.
 app.use('/api/documents', heavyLimiter, documentRoutes);
+// Frontend-friendly aliases: GET /api/payments, GET /api/sales-returns
+app.use('/api', aliasRoutes);
 
 
 

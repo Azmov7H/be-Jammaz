@@ -62,6 +62,10 @@ export const PurchaseService = {
                 }
             }
 
+            // 2b. General ledger — inventory vs cash/payables, same txn.
+            const { AccountingService } = await import('../accountingService.js');
+            await AccountingService.createPurchaseEntries(po, userId, paymentType, sess);
+
             // 3. Guarded idempotent transition — second receive attempt in any
             // concurrent path lands here with 409 and aborts its whole txn.
             const claimed = await PO.findOneAndUpdate(
