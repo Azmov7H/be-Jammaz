@@ -287,10 +287,8 @@ RENDERERS[DOCUMENT_TYPES.SALE_INVOICE] = function renderSaleInvoice(data) {
             <h3>تفاصيل الفاتورة</h3>
             <div class="info-row"><span class="label">الحالة</span><span class="value">${esc(status || '—')}</span></div>
             <div class="info-row"><span class="label">طريقة الدفع</span><span class="value">${esc(payment.methodLabel || '—')}</span></div>
-            <div class="info-row"><span class="label">القناة</span><span class="value">${esc(payment.channelLabel || '—')}</span></div>
             ${sourceRow}
             ${payment.dueDate ? `<div class="info-row"><span class="label">تاريخ الاستحقاق</span><span class="value">${esc(payment.dueDate)}</span></div>` : ''}
-            ${invoice.createdBy ? `<div class="info-row"><span class="label">بواسطة</span><span class="value">${esc(invoice.createdBy)}</span></div>` : ''}
         </div>
     </section>
 

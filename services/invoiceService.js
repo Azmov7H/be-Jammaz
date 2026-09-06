@@ -161,15 +161,17 @@ async create(data, userId) {
                 productName = product.name;
                 costPrice = product.buyPrice || 0;
 
-                // T1b: client price must equal the server-resolved price.
+                // Flexible pricing: the client may charge ABOVE the
+                // system price (price fluctuations). Only a price BELOW
+                // the server-resolved price is rejected; the sent price
+                // is kept as-is so profit reflects what was charged.
                 const serverPrice = this._resolveServerPrice(product, customer);
-                if (!Number.isFinite(unitPrice) || Math.abs(unitPrice - serverPrice) > 0.005) {
+                if (!Number.isFinite(unitPrice) || unitPrice < serverPrice - 0.005) {
                     throw new AppError(
-                        `السعر المرسل (${item.unitPrice}) لا يطابق سعر النظام (${serverPrice}) للمنتج: ${productName}`,
+                        `السعر المرسل (${item.unitPrice}) أقل من سعر النظام (${serverPrice}) للمنتج: ${productName}`,
                         400
                     );
                 }
-                unitPrice = serverPrice;
             }
 
             const itemTotal = Number((item.qty * unitPrice).toFixed(2));

@@ -275,10 +275,8 @@ function renderSaleInvoicePdf(data) {
         ['العنوان', customer.address],
     ], [
         ['طريقة الدفع', payment.methodLabel || '—'],
-        ['القناة', payment.channelLabel || '—'],
         ['رقم التحويل', payment.isElectronic ? payment.sourceNumber : '—'],
         ['تاريخ الاستحقاق', payment.dueDate],
-        ['بواسطة', invoice.createdBy],
     ]);
 
     drawDataTable(doc, [

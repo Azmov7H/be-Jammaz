@@ -86,18 +86,37 @@ describe('Sprint 18 — Customer-specific pricing', () => {
         expect(Number(invoice.total)).toBe(2900);
     });
 
-    it('T1b: invoice rejects when client price does not match server-resolved price', async () => {
+    it('T1b: flexible pricing — client price ABOVE server price is accepted as-is', async () => {
         const product = await createProduct();
         const customer = await createCustomer();
 
-        // Set custom price to 1450; client tries to charge 1500.
+        // Set custom price to 1450; client charges 1500 (price fluctuation).
+        await request.post(`/api/customers/${id(customer)}/pricing`)
+        .set('Cookie', ownerCookie)
+            .send({ productId: id(product), price: 1450 });
+
+        const res = await request.post('/api/invoices').set('Cookie', ownerCookie).send({
+            customerId: id(customer),
+            items: [{ productId: id(product), qty: 1, unitPrice: 1500 }],
+            paymentType: 'cash',
+        });
+        ok(res, 'create invoice above server price');
+        expect(Number(res.body.data.items[0].unitPrice)).toBe(1500);
+        expect(Number(res.body.data.total)).toBe(1500);
+    });
+
+    it('T1b2: invoice still rejects when client price is BELOW server-resolved price', async () => {
+        const product = await createProduct();
+        const customer = await createCustomer();
+
+        // Set custom price to 1450; client tries to charge 1400.
         await request.post(`/api/customers/${id(customer)}/pricing`)
         .set('Cookie', ownerCookie)
             .send({ productId: id(product), price: 1450 });
 
         const bad = await request.post('/api/invoices').set('Cookie', ownerCookie).send({
             customerId: id(customer),
-            items: [{ productId: id(product), qty: 1, unitPrice: 1500 }],
+            items: [{ productId: id(product), qty: 1, unitPrice: 1400 }],
             paymentType: 'cash',
         });
         expect(bad.status).toBe(400);
