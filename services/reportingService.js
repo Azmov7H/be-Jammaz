@@ -24,13 +24,21 @@ export const ReportingService = {
     async getFinancialReport(startDate, endDate) {
         await dbConnect();
 
+        // T-RPT-01 — accept "YYYY-MM-DD" strings from the FE and normalize
+        // to a full inclusive day on the end boundary so same-day entries
+        // after 00:00 UTC aren't accidentally excluded.
+        const start = startDate ? new Date(startDate) : null;
+        if (start) start.setHours(0, 0, 0, 0);
+        const end = endDate ? new Date(endDate) : null;
+        if (end) end.setHours(23, 59, 59, 999);
+
         // Run both aggregations in parallel to reduce execution time
         const [revenueEntries, expenseEntries] = await Promise.all([
             // Revenue (Credits)
             AccountingEntry.aggregate([
                 {
                     $match: {
-                        date: { $gte: startDate, $lte: endDate },
+                        date: { $gte: start, $lte: end },
                         creditAccount: { $in: [ACCOUNTS.SALES_REVENUE, ACCOUNTS.OTHER_INCOME, ACCOUNTS.SURPLUS_INCOME] }
                     }
                 },
@@ -46,7 +54,7 @@ export const ReportingService = {
             AccountingEntry.aggregate([
                 {
                     $match: {
-                        date: { $gte: startDate, $lte: endDate },
+                        date: { $gte: start, $lte: end },
                         debitAccount: { $in: expenseAccountsList }
                     }
                 },
@@ -95,7 +103,11 @@ export const ReportingService = {
 
         const dateQuery = {};
         if (startDate && endDate) {
-            dateQuery.date = { $gte: startDate, $lte: endDate };
+            const s = new Date(startDate);
+            s.setHours(0, 0, 0, 0);
+            const e = new Date(endDate);
+            e.setHours(23, 59, 59, 999);
+            dateQuery.date = { $gte: s, $lte: e };
         }
 
         const report = await Invoice.aggregate([

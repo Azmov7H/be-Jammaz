@@ -70,6 +70,7 @@ export class DebtService {
         const skip = (page - 1) * limit;
 
         const query = {};
+        if (filter._id) query._id = filter._id;
         if (filter.debtorId) query.debtorId = filter.debtorId;
         if (filter.debtorType) query.debtorType = filter.debtorType;
         if (filter.status) {

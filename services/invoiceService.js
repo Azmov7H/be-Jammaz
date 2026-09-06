@@ -46,12 +46,12 @@ export const InvoiceService = {
         };
     },
 
-    async create(data, userId) {
+async create(data, userId) {
         return await withTransaction(async (session) => {
-            const { items, customerId, customerName, customerPhone, paymentType, tax = 0, dueDate, notes, sourceNumber } = data;
+            const { items, customerId, customerName, customerPhone, paymentType, tax = 0, dueDate, notes, sourceNumber, usedCreditBalance = 0 } = data;
 
             // 1. Calculate Totals & Validate Products
-            const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, session);
+            const { processedItems, subtotal, totalCost } = await this._processInvoiceItems(items, customerId, session);
 
             const total = Number((subtotal + Number(tax)).toFixed(2));
             const profit = total - totalCost;
@@ -59,7 +59,14 @@ export const InvoiceService = {
             // 2. Resolve Customer Info
             const { finalName, finalPhone } = await this._resolveCustomerDetails(customerId, customerName, customerPhone, session);
 
-            // 3. Create Invoice Record
+            // 3. Resolve priceType snapshot for the invoice (audit trail)
+            let customerPriceType;
+            if (customerId) {
+                const customer = await CustomerRepository.findById(customerId, session);
+                customerPriceType = customer?.priceType || 'retail';
+            }
+
+            // 4. Create Invoice Record
             const invoiceData = {
                 number: await nextDocumentNumber('INV'),
                 items: processedItems,
@@ -74,9 +81,16 @@ export const InvoiceService = {
                 customer: customerId,
                 customerName: finalName,
                 customerPhone: finalPhone,
+                customerPriceType,
                 createdBy: userId,
                 paymentStatus: paymentType === 'credit' ? 'pending' : 'paid',
-                paidAmount: paymentType === 'credit' ? 0 : total,
+                // If the user opted to apply the customer's creditBalance,
+                // reduce the paidAmount accordingly so the accounting
+                // ledger reflects the actual cash in.
+                paidAmount: paymentType === 'credit' ? 0 : Math.max(0, Number((total - Number(usedCreditBalance)).toFixed(2))),
+                // FIN-CREDIT-CHOICE — persist the deduction so the audit
+                // trail on the invoice shows how much credit was applied.
+                usedCreditBalance: Number(usedCreditBalance) > 0 ? Number(usedCreditBalance) : 0,
                 notes
             };
 

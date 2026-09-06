@@ -26,7 +26,7 @@ export const SaleService = {
             // 1. Stock reduction
             await StockService.reduceStockForSale(invoice.items, invoice._id, userId, session);
 
-            // 2. Treasury & Customer Balance
+// 2. Treasury & Customer Balance
             const netCashReceived = invoice.paidAmount - (invoice.usedCreditBalance || 0);
 
             if (netCashReceived > 0) {
@@ -35,6 +35,28 @@ export const SaleService = {
                     total: netCashReceived,
                     number: invoice.usedCreditBalance > 0 ? `${invoice.number} (بعد الخصم)` : invoice.number
                 }, userId, session);
+            }
+
+            // 2b. FIN-CREDIT-CHOICE — when the customer opted to apply their
+            //     existing creditBalance against this invoice, decrement it
+            //     here so the running balance stays accurate. We only do this
+            //     for paying (non-credit) invoices: on credit invoices the
+            //     full amount becomes a new DB, and the creditBalance must
+            //     stay available for future invoices.
+            if (invoice.customer && invoice.usedCreditBalance > 0 && invoice.paymentType !== 'credit') {
+                const creditOpts = session ? { session } : {};
+                await Customer.findOneAndUpdate(
+                    { _id: invoice.customer, creditBalance: { $gte: invoice.usedCreditBalance } },
+                    [{ $set: {
+                        creditBalance: {
+                            $round: [
+                                { $subtract: [{ $ifNull: ['$creditBalance', 0] }, Number(invoice.usedCreditBalance)] },
+                                2
+                            ]
+                        }
+                    } }],
+                    creditOpts
+                );
             }
 
             // 3. Update Customer Balance & Create Debt Record

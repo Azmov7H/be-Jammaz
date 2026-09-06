@@ -576,11 +576,12 @@ export const TreasuryService = {
     /**
      * Get all transactions for date range
      */
-    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100 } = {}) {
+    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100, maxDays = 90 } = {}) {
         const query = {};
 
-        // T-PERF-01: default 30d window, hard-capped at 90d
-        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 90 });
+        // T-PERF-01: default 30d window, hard-capped. The cap is configurable
+        // per-call (e.g. the dedicated history endpoint widens to 365 days).
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays });
         query.date = { $gte: range.startDate, $lte: range.endDate };
 
         if (type && type !== 'ALL') {

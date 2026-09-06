@@ -240,7 +240,12 @@ export const invoiceSchema = z.object({
     paymentType: z.enum(['cash', 'credit', 'bank', 'wallet', 'check', 'instapay']).default('cash'),
     sourceNumber: sourceNumberSchema,
     dueDate: dateField,
-    shippingCompany: z.string().max(200).optional()
+    shippingCompany: z.string().max(200).optional(),
+    // FIN-CREDIT-CHOICE — when the user opted to deduct the customer's
+    // available creditBalance against this invoice's subtotal. Defaults
+    // to 0 (no deduction, full outstanding-debt behavior). Honored only
+    // for non-credit payment types.
+    usedCreditBalance: money.optional().default(0)
 }).refine(
     data => data.paymentType !== 'credit' || !!data.customerId ||
         (data.customerName && data.customerPhone),
