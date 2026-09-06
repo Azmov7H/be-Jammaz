@@ -18,7 +18,7 @@ const FILTER_SCHEMAS = {
     products: ['search'],
     invoices: ['startDate', 'endDate', 'paymentType', 'status', 'customer'],
     purchaseOrders: ['startDate', 'endDate', 'paymentType', 'status', 'supplier'],
-    treasuryTransactions: ['startDate', 'endDate', 'type', 'method']
+    treasuryTransactions: ['startDate', 'endDate', 'type', 'method', 'category']
 };
 
 const SENSITIVE_PRIVILEGED_ROLES = ['owner', 'manager'];
@@ -201,7 +201,39 @@ const MODULES = {
             }
             if (filters.type) q.type = filters.type;
             if (filters.method) q.method = filters.method;
-            return model.find(q).sort({ date: -1 }).lean();
+            // Category mirrors the treasury dashboard taxonomy
+            // (supplier_payments / shop_expenses) so an export with an
+            // active table filter contains exactly the rows on screen.
+            if (filters.category === 'supplier_payments') {
+                q.type = 'EXPENSE';
+                q.$or = [
+                    { referenceType: 'PurchaseOrder' },
+                    { referenceType: 'Debt' },
+                ];
+            } else if (filters.category === 'shop_expenses') {
+                q.type = 'EXPENSE';
+                q.referenceType = { $in: ['Manual', 'SalesReturn'] };
+            }
+            const rows = await model.find(q).sort({ date: -1 }).lean();
+            // Narrow Debt rows to Supplier debts only — same rule as the
+            // dashboard table (a customer-debt EXPENSE is not a supplier
+            // payment). One batched lookup regardless of row count.
+            if (filters.category === 'supplier_payments') {
+                const debtIds = [...new Set(rows
+                    .filter((r) => r.referenceType === 'Debt' && r.referenceId)
+                    .map((r) => String(r.referenceId)))];
+                if (debtIds.length) {
+                    const Debt = (await import('../models/Debt.js')).default;
+                    const debts = await Debt.find({ _id: { $in: debtIds } }).select('debtorType').lean();
+                    const supplierDebtIds = new Set(debts
+                        .filter((d) => d.debtorType === 'Supplier')
+                        .map((d) => String(d._id)));
+                    return rows.filter((r) =>
+                        r.referenceType === 'PurchaseOrder' ||
+                        (r.referenceType === 'Debt' && supplierDebtIds.has(String(r.referenceId))));
+                }
+            }
+            return rows;
         },
         map: (r) => ({
             date: r.date ? r.date.toISOString().slice(0, 10) : '',

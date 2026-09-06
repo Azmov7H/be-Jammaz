@@ -636,6 +636,42 @@ export const TreasuryService = {
             if (row._id === 'EXPENSE') totals.expense = row.total;
         }
 
+        // 1b. Expense-category split over the SAME period window, using the
+        // same taxonomy as the treasury dashboard so the stat cards, chart
+        // subtitles and exports always agree (never recomputed client-side
+        // over a page-capped list):
+        //   supplier payments = EXPENSE on a PurchaseOrder or a Supplier Debt
+        //   shop expenses     = EXPENSE on a Manual entry or SalesReturn
+        const categoryAgg = await TreasuryTransaction.aggregate([
+            { $match: { date: { $gte: periodStart, $lte: periodEnd }, type: 'EXPENSE' } },
+            { $lookup: { from: 'debts', localField: 'referenceId', foreignField: '_id', as: '_debt' } },
+            {
+                $group: {
+                    _id: {
+                        referenceType: '$referenceType',
+                        debtorType: { $arrayElemAt: ['$_debt.debtorType', 0] }
+                    },
+                    total: { $sum: '$amount' }
+                }
+            }
+        ]);
+        let supplierPayments = 0;
+        let shopExpenses = 0;
+        for (const row of categoryAgg) {
+            const ref = row._id?.referenceType;
+            if (ref === 'PurchaseOrder' || (ref === 'Debt' && row._id?.debtorType === 'Supplier')) {
+                supplierPayments += row.total || 0;
+            } else if (ref === 'Manual' || ref === 'SalesReturn') {
+                shopExpenses += row.total || 0;
+            }
+        }
+
+        // 1c. Full-period transaction count — the ledger endpoint is
+        // page-capped, so the UI must not present a page size as a total.
+        const transactionCount = await TreasuryTransaction.countDocuments({
+            date: { $gte: periodStart, $lte: periodEnd }
+        });
+
         // 2. Calculate Profit from Invoices in this period (Sales only)
         const profitAgg = await Invoice.aggregate([
             { $match: { date: { $gte: periodStart, $lte: periodEnd }, status: { $ne: 'CANCELLED' } } },
@@ -708,10 +744,54 @@ export const TreasuryService = {
             periodBalance: totals.income - totals.expense,
             totalIncome: totals.income,
             totalExpense: totals.expense,
+            supplierPayments,
+            shopExpenses,
+            transactionCount,
             salesProfit: salesProfit,
             totalOutstandingDebt: totalOutstandingDebt,
             recentTransactions
         };
+    },
+
+    /**
+     * Full-period cash-flow buckets for the treasury chart. Unlike the
+     * page-capped ledger endpoint this aggregates the ENTIRE window in the
+     * database, so the chart always agrees with the summary stat cards.
+     * Daily buckets for short ranges, monthly once the span exceeds 60 days
+     * (same rule as the dashboard taxonomy).
+     * @returns {{ granularity: 'day'|'month', buckets: Array<{key:string,income:number,expense:number}> }}
+     */
+    async getCashFlow(startDate, endDate) {
+        const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays: 365 });
+        const spanDays = (range.endDate.getTime() - range.startDate.getTime()) / 86400000;
+        const granularity = spanDays > 60 ? 'month' : 'day';
+
+        const buckets = await TreasuryTransaction.aggregate([
+            { $match: { date: { $gte: range.startDate, $lte: range.endDate } } },
+            {
+                $group: {
+                    _id: {
+                        $dateToString: {
+                            format: granularity === 'month' ? '%Y-%m' : '%Y-%m-%d',
+                            date: '$date'
+                        }
+                    },
+                    income: { $sum: { $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0] } },
+                    expense: { $sum: { $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0] } }
+                }
+            },
+            { $sort: { _id: 1 } },
+            {
+                $project: {
+                    _id: 0,
+                    key: '$_id',
+                    income: 1,
+                    expense: 1
+                }
+            }
+        ]);
+
+        return { granularity, buckets };
     },
 
     /**

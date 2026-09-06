@@ -27,6 +27,13 @@ router.get('/summary', routeHandler(async (req) => {
     return maskSourceInResult(result, req.user.role);
 }));
 
+// Full-period cash-flow buckets for the treasury chart (DB-aggregated,
+// never page-capped so the chart agrees with the summary cards).
+router.get('/cashflow', routeHandler(async (req) => {
+    const { startDate, endDate } = req.query;
+    return await TreasuryService.getCashFlow(startDate, endDate);
+}));
+
 // Get daily cashbox
 router.get('/daily', routeHandler(async (req) => {
     const { date } = req.query;
