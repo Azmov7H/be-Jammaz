@@ -30,15 +30,20 @@ router.get('/:id', validateParams(idParams), routeHandler(async (req) => {
 }));
 
 // Create new physical inventory count
-router.post('/', roleMiddleware(['owner', 'manager']), routeHandler(async (req) => {
-    const { location, options } = req.body;
-    return await PhysicalInventoryService.createCount(location, req.user._id, options || {});
+router.post('/', roleMiddleware(['owner', 'manager']), validate(physicalInventoryCreateSchema), routeHandler(async (req) => {
+    const { location, category, isBlind } = req.body;
+    return await PhysicalInventoryService.createCount(location, req.user._id, { category, isBlind });
 }));
 
 // Update actual quantities
 router.patch('/:id', validateParams(idParams), roleMiddleware(['owner', 'manager']), validate(physicalInventoryUpdateSchema), routeHandler(async (req) => {
-    const { itemUpdates } = req.body;
-    return await PhysicalInventoryService.updateActualQuantities(req.params.id, itemUpdates, req.user._id);
+    const { items } = req.body;
+    return await PhysicalInventoryService.updateActualQuantities(req.params.id, items, req.user._id);
+}));
+
+// Movements recorded after the count snapshot (warns about sales/purchases mid-count)
+router.get('/:id/recent-movements', validateParams(idParams), routeHandler(async (req) => {
+    return await PhysicalInventoryService.getRecentMovements(req.params.id);
 }));
 
 // Complete a count

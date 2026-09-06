@@ -8,7 +8,6 @@ import { LogService } from './logService.js';
 import { UserRepository } from '../repositories/userRepository.js';
 import bcrypt from 'bcryptjs';
 import dbConnect from '../lib/db.js';
-import mongoose from 'mongoose';
 import { NotFoundError, ConflictError, ForbiddenError } from '../lib/errors.js';
 
 /**
@@ -72,7 +71,7 @@ export const PhysicalInventoryService = {
     /**
      * Update actual quantities in a count
      */
-    async updateActualQuantities(countId, itemUpdates, userId) {
+    async updateActualQuantities(countId, items, userId) {
         await dbConnect();
 
         const count = await PhysicalInventory.findById(countId);
@@ -86,7 +85,7 @@ export const PhysicalInventoryService = {
         }
 
         // Update actual quantities
-        for (const update of itemUpdates) {
+        for (const update of items ?? []) {
             // Extract ID if it's an object (populated) or just use the ID string
             const updateProductId = update.productId?._id ? update.productId._id.toString() : update.productId?.toString();
 
@@ -169,7 +168,7 @@ export const PhysicalInventoryService = {
             // Complete the count
             await count.complete(userId);
 
-            // [NEW] Log Action
+            // [NEW] Log Action (raw session — logAction wraps it in { session } itself)
             await LogService.logAction({
                 userId,
                 action: 'COMPLETE_INVENTORY',
@@ -177,7 +176,7 @@ export const PhysicalInventoryService = {
                 entityId: count._id,
                 diff: { valueImpact: count.valueImpact, netDifference: count.netDifference },
                 note: `Inventory count completed for ${count.location}`
-            }, { session });
+            }, session);
 
             // Generate stock adjustments for discrepancies
             const adjustments = [];
@@ -267,6 +266,35 @@ export const PhysicalInventoryService = {
     },
 
     /**
+     * Stock movements recorded after the count snapshot. The frontend
+     * highlights counted products that moved mid-count (sales/purchases
+     * during the count need manual review).
+     */
+    async getRecentMovements(countId) {
+        await dbConnect();
+
+        const count = await PhysicalInventory.findById(countId).select('_id date items.productId').lean();
+        if (!count) {
+            throw new NotFoundError('سجل الجرد غير موجود');
+        }
+
+        const productIds = (count.items || []).map(i => i.productId).filter(Boolean);
+        if (productIds.length === 0) return { movements: [] };
+
+        const { default: StockMovement } = await import('../models/StockMovement.js');
+        const movements = await StockMovement.find({
+            productId: { $in: productIds },
+            date: { $gte: count.date }
+        })
+            .select('productId type qty date')
+            .sort({ date: -1 })
+            .limit(100)
+            .lean();
+
+        return { movements };
+    },
+
+    /**
      * Get count by ID with full details
      */
     async getCountById(countId) {
@@ -347,17 +375,16 @@ export const PhysicalInventoryService = {
      */
     async unlockCount(countId, password, userId) {
         await dbConnect();
-        // [MOD] Transaction Removed for Standalone Compatibility
-        // const session = await mongoose.startSession();
-        // session.startTransaction();
-
-        try {
-            const count = await PhysicalInventory.findById(countId); // .session(session);
+        // withTransaction degrades to non-atomic on standalone dev DBs.
+        return withTransaction(async (session) => {
+            const countQuery = PhysicalInventory.findById(countId);
+            if (session) countQuery.session(session);
+            const count = await countQuery;
             if (!count) throw new NotFoundError('سجل الجرد غير موجود');
             if (count.status !== 'completed') throw new ConflictError('الجرد غير مكتمل بالفعل');
 
             // Find the owner user to verify password
-            const owner = await UserRepository.findOwnerWithPassword(); // .session(session);
+            const owner = await UserRepository.findOwnerWithPassword();
             if (!owner) throw new NotFoundError('لا يوجد مالك مسجل في النظام');
 
             // Verify password
@@ -368,25 +395,19 @@ export const PhysicalInventoryService = {
             count.status = 'draft';
             count.approvedBy = null;
             count.approvedAt = null;
-            await count.save(); // { session });
+            await count.save(session ? { session } : undefined);
 
-            // Log action
+            // Log action (raw session — logAction wraps it in { session } itself)
             await LogService.logAction({
                 userId,
                 action: 'UNLOCK_INVENTORY',
                 entity: 'PhysicalInventory',
                 entityId: count._id,
                 note: `Inventory count unlocked by owner for modification`
-            }); // session);
+            }, session);
 
-            // await session.commitTransaction();
             return count;
-        } catch (error) {
-            // await session.abortTransaction();
-            throw error;
-        } finally {
-            // session.endSession();
-        }
+        });
     },
 };
 

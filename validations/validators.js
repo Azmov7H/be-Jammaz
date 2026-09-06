@@ -424,21 +424,20 @@ export const removeCustomPriceSchema = z.object({
 // Physical inventory
 // ---------------------------------------------------------------------------
 export const physicalInventoryCreateSchema = z.object({
-    location: z.string().min(1, 'الموقع مطلوب').max(200),
-    options: z.object({
-        zeroOut: z.boolean().optional(),
-        categories: z.array(z.string().max(100)).max(50).optional(),
-    }).optional(),
+    location: z.enum(['warehouse', 'shop', 'both']),
+    category: z.string().max(100).nullish(),
+    isBlind: z.coerce.boolean().optional().default(false),
 });
 
 export const physicalInventoryUpdateSchema = z.object({
-    itemUpdates: z.array(z.object({
+    items: z.array(z.object({
         productId: idField,
-        countedQty: z.coerce.number().min(0).max(1e6),
-    })).min(1).max(1000).optional(),
+        actualQty: z.coerce.number().min(0).max(1e6),
+        reason: z.string().max(500).optional(),
+        justification: z.string().max(2000).optional(),
+        justificationReason: z.enum(['damage', 'expired', 'theft', 'data_error', 'other']).nullish(),
+    })).min(1).max(1000),
     notes: z.string().max(2000).optional(),
-}).refine(data => data.itemUpdates || data.notes !== undefined, {
-    message: 'لا يوجد ما يتم تحديثه'
 });
 
 export const unlockSchema = z.object({
