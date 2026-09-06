@@ -172,3 +172,19 @@ pending (no exporter); CSV equivalence holds by quoting+BOM tests.
 2. Viewer/app name + whether the breakage is on-screen vs copy/paste.
 3. Excel: source button + file extension + sample file (to distinguish
    locale-CSV vs paste-flow vs unknown).
+
+## Addendum (2026-09-07) — mixed-direction ID defect found and fixed
+
+Pixel rendering (`pdftoppm` + visual inspection) of a diagnostic PDF exposed
+what byte-level checks missed: pure-Arabic and pure-digit strings rendered
+correctly, but mixed letter-digit tokens embedded in Arabic
+(`#INV-000010` → `000010-INV#`, `REC-1014` / `PO-100` fragmented) were
+corrupted. Root cause: `NUM_RUN_RE` in `lib/pdf/text.js` isolated digit-led
+runs but stopped at ASCII letters, splitting one logical LTR token
+(`INV-` + isolated `000010`) and stranding `-` at RTL level, so the UBA L2
+multi-pass could no longer net out. The old tests locked the bug in
+(expected `100-PO` for input `PO-100`). Fix: token-based isolation
+(`TOKEN_RE`, digit-gated, space-tolerant so `PO 100` stays glued, trailing
+`%` kept) — pure-Latin words stay untouched so `ahmed seera` order holds.
+Verified: outputs now match reference `python-bidi get_display` for all
+matrix cases, and re-rendered pixels read correctly.
