@@ -163,68 +163,77 @@ export class DebtService {
     /**
      * Update debt record manually
      */
-    static async updateDebt(id, data) {
+    static async updateDebt(id, data, userId = null) {
         await dbConnect();
-        const debt = await Debt.findById(id).populate('debtorId', 'name');
-        if (!debt) throw new NotFoundError('Debt not found');
+        return withTransaction(async (session) => {
+            const debt = await Debt.findById(id).populate('debtorId', 'name').session(session);
+            if (!debt) throw new NotFoundError('Debt not found');
 
-        // Calculate old collected amount before changes
-        const oldCollectedAmount = debt.originalAmount - debt.remainingAmount;
+            // Calculate old collected amount before changes
+            const oldCollectedAmount = debt.originalAmount - debt.remainingAmount;
 
-        const allowedFields = ['originalAmount', 'remainingAmount', 'dueDate', 'description'];
-        allowedFields.forEach(field => {
-            if (data[field] !== undefined) {
-                if (field === 'dueDate') debt[field] = new Date(data[field]);
-                else debt[field] = data[field];
-            }
-        });
-
-        // Calculate new collected amount after changes
-        const newCollectedAmount = debt.originalAmount - debt.remainingAmount;
-        const collectedDifference = newCollectedAmount - oldCollectedAmount;
-
-        // Auto-settlement logic
-        if (debt.remainingAmount <= 0.01) {
-            debt.remainingAmount = 0;
-            debt.status = 'settled';
-        } else {
-            // Re-evaluate status if it was settled but now has a balance
-            debt.status = new Date(debt.dueDate) < new Date() ? 'overdue' : 'active';
-        }
-
-        await debt.save();
-
-        // Create treasury adjustment transaction if collected amount changed
-        if (Math.abs(collectedDifference) > 0.01) {
-            const TreasuryTransaction = (await import('../../models/TreasuryTransaction.js')).default;
-
-            const transactionType = debt.debtorType === 'Customer'
-                ? (collectedDifference > 0 ? 'INCOME' : 'EXPENSE')  // Customer: collected more = income, less = expense
-                : (collectedDifference > 0 ? 'EXPENSE' : 'INCOME'); // Supplier: paid more = expense, less = income
-
-            const adjustmentTransaction = new TreasuryTransaction({
-                type: transactionType,
-                amount: Math.abs(collectedDifference),
-                method: 'adjustment',
-                category: 'debt_adjustment',
-                description: `تعديل ${debt.debtorType === 'Customer' ? 'تحصيل' : 'سداد'} - ${debt.debtorId?.name || 'غير معروف'} - ${collectedDifference > 0 ? 'زيادة' : 'نقصان'}: ${Math.abs(collectedDifference).toLocaleString()} د.ل`,
-                referenceType: 'Debt',
-                referenceId: debt._id,
-                date: new Date(),
-                createdBy: null, // System adjustment
-                meta: {
-                    isAdjustment: true,
-                    debtId: debt._id,
-                    oldCollected: oldCollectedAmount,
-                    newCollected: newCollectedAmount,
-                    difference: collectedDifference
+            const allowedFields = ['originalAmount', 'remainingAmount', 'dueDate', 'description'];
+            allowedFields.forEach(field => {
+                if (data[field] !== undefined) {
+                    if (field === 'dueDate') debt[field] = new Date(data[field]);
+                    else debt[field] = data[field];
                 }
             });
 
-            await adjustmentTransaction.save();
-        }
+            // Calculate new collected amount after changes
+            const newCollectedAmount = debt.originalAmount - debt.remainingAmount;
+            const collectedDifference = newCollectedAmount - oldCollectedAmount;
 
-        return debt;
+            // Auto-settlement logic
+            if (debt.remainingAmount <= 0.01) {
+                debt.remainingAmount = 0;
+                debt.status = 'settled';
+            } else {
+                // Re-evaluate status if it was settled but now has a balance
+                debt.status = new Date(debt.dueDate) < new Date() ? 'overdue' : 'active';
+            }
+
+            await debt.save({ session });
+
+            // Keep the debtor's cached balance in sync: more collected/paid
+            // means less outstanding, and vice versa.
+            if (Math.abs(collectedDifference) > 0.01) {
+                const Model = debt.debtorType === 'Customer'
+                    ? (await import('../../models/Customer.js')).default
+                    : (await import('../../models/Supplier.js')).default;
+                await Model.findByIdAndUpdate(debt.debtorId?._id || debt.debtorId, {
+                    $inc: { balance: -collectedDifference }
+                }).session(session);
+            }
+
+            // Create treasury adjustment transaction if collected amount changed.
+            // Routed through _createTransactions so TreasuryBalance stays in
+            // sync. CashboxDaily is intentionally untouched: an adjustment is a
+            // book correction, no cash moved (fieldFor would misbucket it to
+            // the cash bucket). Only schema fields are set (category/meta are
+            // not part of the TreasuryTransaction schema and were dropped).
+            if (Math.abs(collectedDifference) > 0.01) {
+                const { TreasuryService } = await import('../treasuryService.js');
+
+                const transactionType = debt.debtorType === 'Customer'
+                    ? (collectedDifference > 0 ? 'INCOME' : 'EXPENSE')  // Customer: collected more = income, less = expense
+                    : (collectedDifference > 0 ? 'EXPENSE' : 'INCOME'); // Supplier: paid more = expense, less = income
+
+                await TreasuryService._createTransactions([{
+                    type: transactionType,
+                    amount: Math.abs(collectedDifference),
+                    method: 'adjustment',
+                    description: `تعديل ${debt.debtorType === 'Customer' ? 'تحصيل' : 'سداد'} - ${debt.debtorId?.name || 'غير معروف'} - ${collectedDifference > 0 ? 'زيادة' : 'نقصان'}: ${Math.abs(collectedDifference).toLocaleString()} ج.م`,
+                    referenceType: 'Debt',
+                    referenceId: debt._id,
+                    partnerId: debt.debtorId?._id || debt.debtorId,
+                    date: new Date(),
+                    createdBy: userId
+                }], session);
+            }
+
+            return debt;
+        });
     }
 
     /**

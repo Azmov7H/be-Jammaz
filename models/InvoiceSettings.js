@@ -127,7 +127,8 @@ InvoiceSettingsSchema.statics.getSettings = async function () {
     return this.getSettingsBase();
 };
 
-export default mongoose.models.InvoiceSettings || mongoose.model('InvoiceSettings', InvoiceSettingsSchema);
-
-// T-DB-03: at most ONE active settings doc (singleton pattern)
+// T-DB-03: at most ONE active settings doc (singleton pattern).
+// Kept above model compilation so ensureIndexes picks it up.
 InvoiceSettingsSchema.index({ isActive: 1 }, { unique: true, partialFilterExpression: { isActive: true } });
+
+export default mongoose.models.InvoiceSettings || mongoose.model('InvoiceSettings', InvoiceSettingsSchema);

@@ -15,8 +15,8 @@ const ShortageReportSchema = new mongoose.Schema({
     notes: String
 }, { timestamps: true });
 
-export default mongoose.models.ShortageReport || mongoose.model('ShortageReport', ShortageReportSchema);
-
-// T-DB-01
+// T-DB-01 (kept above model compilation so ensureIndexes picks them up)
 ShortageReportSchema.index({ product: 1 });
 ShortageReportSchema.index({ status: 1 });
+
+export default mongoose.models.ShortageReport || mongoose.model('ShortageReport', ShortageReportSchema);

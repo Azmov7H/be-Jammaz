@@ -77,6 +77,16 @@ const debtSchema = new mongoose.Schema({
 debtSchema.index({ debtorType: 1, debtorId: 1, status: 1 });
 debtSchema.index({ dueDate: 1, status: 1 }); // For overdue checks
 
+// T-DB-03: duplicate-guard for debts derived from documents. Unique only
+// among live debts (active/overdue) so settled/written-off rows never block
+// re-creation via sync. NOTE: index() calls must stay above model
+// compilation — Mongoose only ensures indexes registered on the schema
+// before first use.
+debtSchema.index(
+    { referenceType: 1, referenceId: 1, debtorType: 1, debtorId: 1 },
+    { unique: true, partialFilterExpression: { status: { $in: ['active', 'overdue'] } } }
+);
+
 // Virtual for progress
 debtSchema.virtual('progress').get(function () {
     if (this.originalAmount === 0) return 100;
@@ -84,9 +94,3 @@ debtSchema.virtual('progress').get(function () {
 });
 
 export default mongoose.models.Debt || mongoose.model('Debt', debtSchema);
-
-// T-DB-03: duplicate-guard for debts derived from documents
-debtSchema.index(
-    { referenceType: 1, referenceId: 1, debtorType: 1, debtorId: 1 },
-    { unique: true, partialFilterExpression: { status: { $ne: 'CANCELLED' } } }
-);

@@ -331,6 +331,32 @@ export const StockService = {
     },
 
     /**
+     * Adjust a single location to an absolute quantity (route-level contract:
+     * { productId, location: 'shop'|'warehouse', newQty, reason }).
+     * Keeps the other location untouched and delegates to adjustStock.
+     */
+    async adjustStockLocation(productId, location, newQty, reason, userId, session = null) {
+        const product = await Product.findById(productId).session(session);
+
+        if (!product) {
+            throw new NotFoundError('المنتج غير موجود');
+        }
+
+        if (location !== 'shop' && location !== 'warehouse') {
+            throw new BadRequestError('الموقع يجب أن يكون shop أو warehouse');
+        }
+
+        const newWarehouseQty = location === 'warehouse' ? newQty : product.warehouseQty;
+        const newShopQty = location === 'shop' ? newQty : product.shopQty;
+
+        if (newWarehouseQty === product.warehouseQty && newShopQty === product.shopQty) {
+            throw new BadRequestError('لا يوجد تغيير في الكمية');
+        }
+
+        return this.adjustStock(productId, newWarehouseQty, newShopQty, reason, userId, session);
+    },
+
+    /**
      * Get stock movement history for a product
      */
     async getProductHistory(productId, limit = 50) {

@@ -172,7 +172,7 @@ export const DashboardService = {
             Invoice.find().sort({ createdAt: -1 }).limit(5).populate('createdBy', 'name'),
             StockMovement.aggregate([
                 { $match: { type: 'SALE' } },
-                { $group: { _id: "$productId", totalQty: { $sum: "$quantity" } } },
+                { $group: { _id: "$productId", totalQty: { $sum: "$qty" } } },
                 { $sort: { totalQty: -1 } },
                 { $limit: 5 },
                 { $lookup: { from: "products", localField: "_id", foreignField: "_id", as: "product" } },
@@ -218,7 +218,7 @@ export const DashboardService = {
         // T-PERF-02: one scan serves both bundle + ABC suggestions (was 2)
         const fastMovers = await StockMovement.aggregate([
             { $match: { type: 'SALE' } },
-            { $group: { _id: "$productId", totalQty: { $sum: "$quantity" } } },
+            { $group: { _id: "$productId", totalQty: { $sum: "$qty" } } },
             { $sort: { totalQty: -1 } },
             { $limit: 5 },
             { $lookup: { from: "products", localField: "_id", foreignField: "_id", as: "product" } },

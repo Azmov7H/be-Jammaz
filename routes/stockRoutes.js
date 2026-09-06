@@ -30,7 +30,11 @@ router.get('/status', routeHandler(async () => {
 
 router.post('/transfer', validate(stockTransferSchema),  roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
     const { productId, from, to, qty, quantity, note } = req.body;
-    return await StockService.transferStock(productId, from, to, qty || quantity, note, req.user._id);
+    const amount = qty ?? quantity;
+    if (from === 'warehouse' && to === 'shop') {
+        return await StockService.transferToShop(productId, amount, req.user._id, note);
+    }
+    return await StockService.transferToWarehouse(productId, amount, req.user._id, note);
 }));
 
 // Alias for stock movements for frontend compatibility
@@ -59,7 +63,7 @@ router.post('/move', validate(stockMoveSchema),  roleMiddleware(['warehouse', 'o
 
 router.post('/adjust', roleMiddleware(['owner', 'manager']), validate(stockAdjustSchema), routeHandler(async (req) => {
     const { productId, location, newQty, reason } = req.body;
-    return await StockService.adjustStock(productId, location, newQty, reason, req.user._id);
+    return await StockService.adjustStockLocation(productId, location, newQty, reason, req.user._id);
 }));
 
 export default router;

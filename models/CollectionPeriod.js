@@ -31,8 +31,8 @@ const collectionPeriodSchema = new mongoose.Schema({
     timestamps: true
 });
 
-export default mongoose.models.CollectionPeriod || mongoose.model('CollectionPeriod', collectionPeriodSchema);
-
-// T-DB-01
+// T-DB-01 (kept above model compilation so ensureIndexes picks them up)
 collectionPeriodSchema.index({ debtId: 1 });
 collectionPeriodSchema.index({ assignedTo: 1, status: 1 });
+
+export default mongoose.models.CollectionPeriod || mongoose.model('CollectionPeriod', collectionPeriodSchema);

@@ -95,7 +95,7 @@ router.patch('/debts/:id',
         description: z.string().max(500).optional(),
     })),
     routeHandler(async (req) => {
-        return await DebtService.updateDebt(req.params.id, req.body);
+        return await DebtService.updateDebt(req.params.id, req.body, req.user._id);
     })
 );
 

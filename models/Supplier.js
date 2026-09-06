@@ -27,10 +27,10 @@ const SupplierSchema = new mongoose.Schema({
     linkedCustomer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', sparse: true, unique: true },
 }, { timestamps: true });
 
-export default mongoose.models.Supplier || mongoose.model('Supplier', SupplierSchema);
-
-// T-DB-01
+// T-DB-01 (kept above model compilation so ensureIndexes picks them up)
 SupplierSchema.index({ name: 1 });
 // T-DB-03: match Customer uniqueness semantics; sparse so blank phones coexist.
 SupplierSchema.index({ phone: 1 }, { unique: true, sparse: true });
 SupplierSchema.index({ isActive: 1 });
+
+export default mongoose.models.Supplier || mongoose.model('Supplier', SupplierSchema);

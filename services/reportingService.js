@@ -152,6 +152,61 @@ export const ReportingService = {
     },
 
     /**
+     * Inventory Report — totals, valuation (at buy price), low/out-of-stock
+     * lists and per-category breakdown, computed live from Product.
+     */
+    async getInventoryReport() {
+        await dbConnect();
+        const { default: Product } = await import('../models/Product.js');
+
+        const [totals, byCategory, lowStock, outOfStock] = await Promise.all([
+            Product.aggregate([
+                {
+                    $group: {
+                        _id: null,
+                        productCount: { $sum: 1 },
+                        totalUnits: { $sum: '$stockQty' },
+                        stockValue: { $sum: { $multiply: ['$stockQty', '$buyPrice'] } }
+                    }
+                }
+            ]),
+            Product.aggregate([
+                {
+                    $group: {
+                        _id: '$category',
+                        productCount: { $sum: 1 },
+                        totalUnits: { $sum: '$stockQty' },
+                        stockValue: { $sum: { $multiply: ['$stockQty', '$buyPrice'] } }
+                    }
+                },
+                { $sort: { stockValue: -1 } }
+            ]),
+            Product.find({ $expr: { $and: [{ $gt: ['$stockQty', 0] }, { $lte: ['$stockQty', '$minLevel'] }] } })
+                .select('name code stockQty minLevel buyPrice category')
+                .sort({ stockQty: 1 })
+                .limit(100)
+                .lean(),
+            Product.find({ stockQty: { $lte: 0 } })
+                .select('name code stockQty minLevel buyPrice category')
+                .sort({ name: 1 })
+                .limit(100)
+                .lean()
+        ]);
+
+        const t = totals[0] || { productCount: 0, totalUnits: 0, stockValue: 0 };
+        return {
+            productCount: t.productCount,
+            totalUnits: t.totalUnits,
+            stockValue: t.stockValue,
+            lowStockCount: lowStock.length,
+            outOfStockCount: outOfStock.length,
+            byCategory,
+            lowStock,
+            outOfStock
+        };
+    },
+
+    /**
      * Shortage Reports
      */
     async getShortageReports(status) {
