@@ -5,7 +5,7 @@ export default defineConfig({
         environment: 'node',
         include: [
             'tests/**/*.test.js',
-            'lib/*.test.js',
+            'lib/**/*.test.js',
             'services/*.test.js',
             'document/**/*.test.js',
         ],

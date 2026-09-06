@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { renderPdf, renderPurchaseInvoicePdf } from './pdf.js';
+import { renderPdf, renderSaleInvoicePdf, renderPurchaseInvoicePdf, renderCustomerCollectionReceiptPdf } from './pdf.js';
 import { render } from './index.js';
 import { AppError } from '../../lib/errors.js';
 
@@ -67,5 +67,27 @@ describe('renderPdf dispatcher', () => {
     it('rejects unknown formats with AppError 501', async () => {
         await expect(render('xlsx', 'PURCHASE_INVOICE', {}))
             .rejects.toMatchObject({ statusCode: 501 });
+    });
+});
+
+describe('identifier fidelity', () => {
+    it('stores invoice and receipt IDs verbatim in the PDF stream', async () => {
+        const sale = await renderSaleInvoicePdf({
+            branding: {}, number: 'INV-2041', date: '2026-09-06',
+            customer: {}, items: [], totals: {}, payment: {},
+        });
+        expect(sale.includes('INV-2041')).toBe(true);
+
+        const purch = await renderPurchaseInvoicePdf({
+            branding: {}, number: 'PO-100',
+            supplier: {}, purchaseOrder: {}, items: [], totals: {}, payment: {},
+        });
+        expect(purch.includes('PO-100')).toBe(true);
+
+        const receipt = await renderCustomerCollectionReceiptPdf({
+            branding: {}, receiptNumber: 'RC-7',
+            customer: {}, transaction: {}, payment: {},
+        });
+        expect(receipt.includes('RC-7')).toBe(true);
     });
 });

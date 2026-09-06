@@ -17,6 +17,7 @@
     "dependencies": {
         "arabic-reshaper": "^1.1.0",
         "bcryptjs": "^3.0.3",
+        "bidi-js": "^1.1.0",
         "compression": "^1.8.1",
         "cookie-parser": "^1.4.7",
         "cors": "^2.8.5",
@@ -25,6 +26,7 @@
         "express": "^4.21.0",
         "express-mongo-sanitize": "^2.2.0",
         "express-rate-limit": "^8.6.2",
+        "fontkit": "^2.0.4",
         "google-auth-library": "^10.5.0",
         "helmet": "^8.1.0",
         "hpp": "^0.2.3",
