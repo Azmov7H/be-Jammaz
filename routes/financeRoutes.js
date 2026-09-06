@@ -141,15 +141,19 @@ router.get('/receipts/:id', routeHandler(async (req) => {
     return r;
 }));
 
-// NEW: Get treasury summary for date range
-router.get('/treasury', routeHandler(async (req) => {
+// Treasury summary for date range.
+// ALIAS of canonical GET /api/treasury/summary (same service call).
+// Kept because the /financial dashboard uses it; new code should prefer
+// the /api/treasury/* canonical paths.
+router.get('/treasury', deprecated, routeHandler(async (req) => {
     const { startDate, endDate } = req.query;
     const result = await TreasuryService.getSummary(startDate, endDate);
     return maskSourceInResult(result, req.user.role);
 }));
 
-// NEW: Record manual transaction (SEC-AUTH — same ACL as treasury manual routes)
-router.post('/transaction', roleMiddleware(['owner', 'manager']), validate(treasuryTransactionSchema), routeHandler(async (req) => {
+// Record manual transaction (SEC-AUTH — same ACL as treasury manual routes).
+// ALIAS of canonical POST /api/treasury/manual-income + /manual-expense.
+router.post('/transaction', deprecated, roleMiddleware(['owner', 'manager']), validate(treasuryTransactionSchema), routeHandler(async (req) => {
     const { amount, description, type, category, date, method, sourceNumber } = req.body;
 
     if (type === 'INCOME') {
@@ -159,13 +163,15 @@ router.post('/transaction', roleMiddleware(['owner', 'manager']), validate(treas
     }
 }));
 
-// NEW: Undo transaction
-router.delete('/transaction/:id', validateParams(z.object({ id: idSchema })), roleMiddleware(['owner']), routeHandler(async (req) => {
+// Undo transaction.
+// ALIAS of canonical DELETE /api/treasury/transactions/:id.
+router.delete('/transaction/:id', deprecated, validateParams(z.object({ id: idSchema })), roleMiddleware(['owner']), routeHandler(async (req) => {
     return await TreasuryService.undoTransaction(req.params.id, req.user._id);
 }));
 
-// NEW: Get daily cashbox details
-router.get('/daily', routeHandler(async (req) => {
+// Daily cashbox details.
+// ALIAS of canonical GET /api/treasury/daily.
+router.get('/daily', deprecated, routeHandler(async (req) => {
     const { date } = req.query;
     return await TreasuryService.getDailyCashbox(date || new Date());
 }));

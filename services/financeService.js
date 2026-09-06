@@ -33,10 +33,11 @@ export const FinanceService = {
     },
 
     /**
-     * Helper: Update schedules after a payment
+     * Helper: Update schedules after a payment.
+     * Forwards `session` so callers inside a transaction stay atomic.
      */
-    async updateSchedulesAfterPayment(entityId, entityType, amount) {
-        return PaymentService.updateSchedulesAfterPayment(entityId, entityType, amount);
+    async updateSchedulesAfterPayment(entityId, entityType, amount, session = null) {
+        return PaymentService.updateSchedulesAfterPayment(entityId, entityType, amount, session);
     },
 
     /**

@@ -11,6 +11,10 @@ const router = express.Router();
 
 router.use(authMiddleware);
 
+// CANONICAL treasury paths. The /api/financial/* duplicates (/treasury,
+// /transaction, /transaction/:id, /daily) are deprecated aliases kept for
+// the /financial dashboard — new code should use these paths.
+
 // Get current treasury balance
 router.get('/balance', routeHandler(async () => {
     return await TreasuryService.getCurrentBalance();
