@@ -408,12 +408,117 @@ describe('renderHtml — CUSTOMER_STATEMENT', () => {
 
     it('paginates long statements (multi-page)', () => {
         const lines = Array.from({ length: 35 }, (_, i) => ({
-            id: String(i), type: 'INVOICE', reference: `INV-${i}`, label: `فاتورة #${i}`,
-            description: '', debit: 100, credit: 0, balance: 1500 + (i + 1) * 100,
-            dateFormatted: '2026-08-10T00:00:00.000Z',
-            debitFormatted: '100.00', creditFormatted: '0.00', balanceFormatted: String(1500 + (i + 1) * 100)
+            id: String(i), type: 'INVOICE', typeLabel: 'فاتورة', reference: `INV-${i}`,
+            label: 'x', description: '', debit: 100, credit: 0, methodLabel: '', date: '2026-08-10T00:00:00.000Z'
         }));
-        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT, sampleStatement({ lines }));
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement({ lines }));
+        expect(html).toContain('صفحة 1 من 2');
+        expect(html).toContain('صفحة 2 من 2');
+    });
+});
+
+function sampleCustomerTransactionStatement(overrides = {}) {
+    return {
+        type: 'customer_transaction_statement',
+        title: 'حركات عميل',
+        documentType: 'CUSTOMER_TRANSACTION_STATEMENT',
+        branding: {
+            companyName: 'مؤسستي',
+            primaryColor: '#1B3C73',
+            headerBgColor: '#1B3C73',
+            address: '', phone: '', additionalPhones: [],
+            email: '', website: '', footerText: 'شكراً',
+        },
+        customer: {
+            id: OID,
+            name: 'شركة الأمل',
+            phone: '010',
+            address: 'Cairo',
+            taxNumber: 'T1',
+            linkedSupplier: null,
+        },
+        period: {
+            startDate: '2026-08-01T00:00:00.000Z',
+            endDate: '2026-08-31T23:59:59.000Z',
+            days: 30,
+        },
+        typeFilter: null,
+        availableTypes: [
+            { value: 'INVOICE', label: 'فاتورة مبيعات' },
+            { value: 'PAYMENT', label: 'تحصيل' },
+            { value: 'REFUND', label: 'مرتجع / صرف' },
+            { value: 'DEBT', label: 'مديونية' },
+        ],
+        totals: { debits: 1000, credits: 600, net: 400 },
+        lines: [
+            { id: '1', type: 'PAYMENT', typeLabel: 'تحصيل', reference: 'R-1', label: 'تحصيل', description: '', debit: 0, credit: 500, methodLabel: 'نقدي', date: '2026-08-05T00:00:00.000Z' },
+            { id: '2', type: 'INVOICE', typeLabel: 'فاتورة مبيعات', reference: 'INV-1', label: 'فاتورة مبيعات #INV-1', description: '', debit: 1000, credit: 0, methodLabel: 'نقدي', date: '2026-08-10T00:00:00.000Z' },
+            { id: '3', type: 'REFUND', typeLabel: 'مرتجع / صرف', reference: 'RET-1', label: 'مرتجع #RET-1', description: '', debit: 0, credit: 100, methodLabel: '', date: '2026-08-20T00:00:00.000Z' },
+        ],
+        generatedAt: '2026-09-01T10:00:00.000Z',
+        generatedBy: 'Owner',
+        filters: { startDate: '2026-08-01T00:00:00.000Z', endDate: '2026-08-31T23:59:59.000Z', type: null },
+        ...overrides,
+    };
+}
+
+describe('renderHtml — CUSTOMER_TRANSACTION_STATEMENT', () => {
+    it('renders the title + customer block + period', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement());
+        expect(html).toContain('حركات عميل');
+        expect(html).toContain('شركة الأمل');
+        expect(html).toContain('data-document-type="customer-transaction-statement"');
+    });
+
+    it('shows the totals trio (debits / credits / net)', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement());
+        expect(html).toContain('إجمالي المدين');
+        expect(html).toContain('إجمالي الدائن');
+        expect(html).toContain('الصافي');
+        expect(html).toContain('1,000.00');
+        expect(html).toContain('600.00');
+        expect(html).toContain('400.00');
+    });
+
+    it('shows a "كل الحركات" filter badge when no type filter is set', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement({ typeFilter: null }));
+        expect(html).toContain('كل الحركات');
+    });
+
+    it('shows a specific type label when type filter is set', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement({ typeFilter: 'INVOICE' }));
+        expect(html).toContain('فاتورة مبيعات');
+        expect(html).not.toContain('كل الحركات');
+    });
+
+    it('renders a row per line with type pill + reference + method + debit/credit', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement());
+        expect(html).toContain('INV-1');
+        expect(html).toContain('R-1');
+        expect(html).toContain('RET-1');
+        expect(html).toContain('type-invoice');
+        expect(html).toContain('type-payment');
+        expect(html).toContain('type-refund');
+    });
+
+    it('escapes XSS in customer name + line label', () => {
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement({
+            customer: { id: OID, name: '<script>alert(1)</script>', phone: '', address: '', taxNumber: '', linkedSupplier: null },
+            lines: [
+                { id: '1', type: 'INVOICE', typeLabel: 'X', reference: 'Y', label: '<img src=x>', description: '', debit: 1, credit: 0, methodLabel: '', date: '2026-08-10T00:00:00.000Z' }
+            ]
+        }));
+        expect(html).not.toContain('<script>alert(1)</script>');
+        expect(html).not.toContain('<img src=x>');
+        expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('paginates long statements (multi-page)', () => {
+        const lines = Array.from({ length: 35 }, (_, i) => ({
+            id: String(i), type: 'INVOICE', typeLabel: 'فاتورة', reference: `INV-${i}`,
+            label: 'x', description: '', debit: 100, credit: 0, methodLabel: '', date: '2026-08-10T00:00:00.000Z'
+        }));
+        const html = renderHtml(DOCUMENT_TYPES.CUSTOMER_TRANSACTION_STATEMENT, sampleCustomerTransactionStatement({ lines }));
         expect(html).toContain('صفحة 1 من 2');
         expect(html).toContain('صفحة 2 من 2');
     });

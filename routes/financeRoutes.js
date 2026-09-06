@@ -98,6 +98,38 @@ router.post('/debts/sync', roleMiddleware(['owner', 'manager']), validate(z.obje
     return await DebtService.syncDebts(req.body.debtorId, req.body.debtorType);
 }));
 
+// Create a manual debt record (money-path — bumps debtor balance)
+router.post('/debts', roleMiddleware(['owner', 'manager']), validate(z.object({
+    debtorType: z.enum(['Customer', 'Supplier']),
+    debtorId: idSchema,
+    amount: money,
+    dueDate: z.string().optional().nullable(),
+    referenceType: z.enum(['Invoice', 'PurchaseOrder', 'Manual', 'Customer', 'Supplier']).default('Manual'),
+    referenceId: idSchema.optional(),
+    description: z.string().max(500).optional()
+})), routeHandler(async (req) => {
+    const { debtorType, debtorId, amount, dueDate, referenceType, referenceId, description } = req.body;
+    return await DebtService.createDebt({
+        debtorType,
+        debtorId,
+        amount,
+        dueDate: dueDate || new Date(),
+        referenceType,
+        referenceId: referenceId || debtorId,
+        description,
+        createdBy: req.user._id
+    });
+}));
+
+// Delete a debt record (reverses its balance effect + schedules)
+router.delete('/debts/:id',
+    roleMiddleware(['owner', 'manager']),
+    validateParams(z.object({ id: idSchema })),
+    routeHandler(async (req) => {
+        return await DebtService.deleteDebt(req.params.id);
+    })
+);
+
 // Update a debt record manually (money-path — adjusts balance + treasury adjustment)
 router.patch('/debts/:id',
     validateParams(z.object({ id: idSchema })),
