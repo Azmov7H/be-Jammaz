@@ -22,6 +22,7 @@
 
 import PDFDocument from 'pdfkit';
 import { DOCUMENT_TYPES } from '../../lib/documentRegistry.js';
+import { AppError } from '../../lib/errors.js';
 
 // pdfkit returns a Promise via the .on('data')/end pipeline; the helper
 // functions in this file wrap that pipeline in a single async call.
@@ -246,8 +247,8 @@ function drawFooter(doc, branding) {
 function badgeKindFor(status) {
     if (!status) return null;
     const s = String(status).toLowerCase();
-    if (s.includes('مدفوع') && !s.includes('غير')) return 'paid';
     if (s.includes('جزئي')) return 'partial';
+    if (s.includes('مدفوع') && !s.includes('غير')) return 'paid';
     return 'pending';
 }
 
@@ -321,6 +322,61 @@ function renderSaleInvoicePdf(data) {
             { header: 'رقم التحويل', key: 'sourceNumber', width: CONTENT_WIDTH * 0.2 },
             { header: 'المبلغ', key: 'amount', width: CONTENT_WIDTH * 0.15, align: 'left', get: (r) => fmtMoney(r.amount) },
         ], payments);
+    }
+
+    drawFooter(doc, branding);
+    return toBuffer(doc);
+}
+
+function renderPurchaseInvoicePdf(data) {
+    const {
+        branding = {}, number = '', date = '',
+        paymentStatusLabel = '', supplier = {}, purchaseOrder = {},
+        items = [], totals = {}, payment = {},
+    } = data || {};
+
+    const doc = newDoc({ primaryColor: branding.primaryColor || '#1B3C73' });
+    drawHeader(doc, {
+        branding, title: 'فاتورة مشتريات', number, date,
+        badgeText: paymentStatusLabel, badgeKind: badgeKindFor(paymentStatusLabel),
+    });
+
+    drawInfoGrid(doc, [
+        ['اسم المورد', supplier.name],
+        ['الهاتف', supplier.phone],
+        ['الرقم الضريبي', supplier.taxNumber],
+        ['العنوان', supplier.address],
+        ['الرصيد المستحق', `${fmtMoney(supplier.balance)} ج.م`],
+    ], [
+        ['حالة الأمر', purchaseOrder.statusLabel || '—'],
+        ['طريقة الدفع', payment.methodLabel || '—'],
+        ['رقم التحويل', payment.isElectronic ? payment.sourceNumber : '—'],
+        ['تاريخ الاستحقاق', payment.dueDate],
+        ['أنشأها', purchaseOrder.createdBy],
+    ]);
+
+    drawDataTable(doc, [
+        { header: 'المنتج', key: 'productName', width: CONTENT_WIDTH * 0.34 },
+        { header: 'المطلوب', key: 'qtyOrdered', width: CONTENT_WIDTH * 0.12, align: 'left', get: (r) => fmtQty(r.qtyOrdered) },
+        { header: 'المستلم', key: 'qtyReceived', width: CONTENT_WIDTH * 0.12, align: 'left', get: (r) => fmtQty(r.qtyReceived) },
+        { header: 'سعر الوحدة', key: 'unitPrice', width: CONTENT_WIDTH * 0.19, align: 'left', get: (r) => fmtMoney(r.unitPrice) },
+        { header: 'الإجمالي', key: 'lineTotal', width: CONTENT_WIDTH * 0.23, align: 'left', get: (r) => fmtMoney(r.lineTotal) },
+    ], items);
+
+    drawTotalsBox(doc, [
+        { label: 'المجموع الفرعي', value: totals.subtotal },
+        { label: 'المدفوع', value: totals.paidAmount },
+        { label: 'المتبقي', value: totals.remaining },
+    ], { label: 'الإجمالي', value: totals.total });
+
+    if (purchaseOrder.notes) {
+        doc.rect(MARGIN, doc.y, CONTENT_WIDTH, 40).fill('#f9fafb');
+        doc.font('body').fontSize(8).fillColor('#6b7280')
+            .text('ملاحظات', MARGIN + 12, doc.y + 8);
+        doc.font('body-bold').fontSize(10).fillColor('#1f2937')
+            .text(purchaseOrder.notes, MARGIN + 12, doc.y + 20,
+                { width: CONTENT_WIDTH - 24 });
+        doc.y += 50;
     }
 
     drawFooter(doc, branding);
@@ -485,6 +541,7 @@ function renderCustomerStatementPdf(data) {
 
 const RENDERERS = Object.create(null);
 RENDERERS[DOCUMENT_TYPES.SALE_INVOICE] = renderSaleInvoicePdf;
+RENDERERS[DOCUMENT_TYPES.PURCHASE_INVOICE] = renderPurchaseInvoicePdf;
 RENDERERS[DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT] = renderCustomerCollectionReceiptPdf;
 RENDERERS[DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT] = renderCustomerStatementPdf;
 
@@ -498,12 +555,11 @@ RENDERERS[DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT] = renderCustomerStatementPd
 export async function renderPdf(type, data) {
     const fn = RENDERERS[type];
     if (!fn) {
-        const err = new Error(`PDF renderer for ${type} is not implemented`);
-        err.code = 'NOT_IMPLEMENTED';
-        err.statusCode = 501;
-        throw err;
+        // Must be an AppError: mapError() only honours statusCode on
+        // AppError instances — a plain Error would surface as a 500.
+        throw new AppError(`PDF renderer for ${type} is not implemented`, 501, 'NOT_IMPLEMENTED');
     }
     return await fn(data);
 }
 
-export { renderSaleInvoicePdf, renderCustomerCollectionReceiptPdf, renderCustomerStatementPdf };
+export { renderSaleInvoicePdf, renderPurchaseInvoicePdf, renderCustomerCollectionReceiptPdf, renderCustomerStatementPdf };

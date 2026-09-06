@@ -16,6 +16,7 @@
 import { renderHtml } from './html.js';
 import { renderPrintHtml } from './print.js';
 import { renderPdf } from './pdf.js';
+import { AppError } from '../../lib/errors.js';
 
 export const OUTPUT_FORMAT_RENDERERS = Object.freeze({
     html: renderHtml,
@@ -34,10 +35,9 @@ export const OUTPUT_FORMAT_RENDERERS = Object.freeze({
 export async function render(format, type, data) {
     const fn = OUTPUT_FORMAT_RENDERERS[format];
     if (!fn) {
-        const err = new Error(`renderer for ${type} (${format}) is not yet implemented`);
-        err.code = 'NOT_IMPLEMENTED';
-        err.statusCode = 501;
-        throw err;
+        // AppError (not plain Error) so mapError() returns the 501
+        // instead of collapsing it to a 500.
+        throw new AppError(`renderer for ${type} (${format}) is not yet implemented`, 501, 'NOT_IMPLEMENTED');
     }
     return await fn(type, data);
 }
