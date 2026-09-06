@@ -58,7 +58,7 @@ describe('T-PERF-03: running treasury balance', () => {
     it('undo reverses the running balance atomically with the delete', async () => {
         const list = await app.get('/api/treasury/transactions?limit=5')
             .set('Cookie', ownerCookie).expect(200);
-        const tx = list.body.data.find(t => t.referenceType === 'Manual' && t.type === 'INCOME');
+        const tx = list.body.data.transactions.find(t => t.referenceType === 'Manual' && t.type === 'INCOME');
         expect(tx).toBeTruthy();
 
         const before = await ledgerSum();

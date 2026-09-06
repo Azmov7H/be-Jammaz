@@ -16,7 +16,7 @@ const EXPORT_TYPES = [
 
 const exportSchema = z.object({
     type: z.enum(EXPORT_TYPES),
-    format: z.enum(['csv', 'xlsx']).default('csv'),
+    format: z.enum(['csv', 'pdf']).default('csv'),
     filters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().default({})
 }).strict();
 
@@ -26,7 +26,7 @@ router.use(authMiddleware);
 router.post('/', roleMiddleware(['owner', 'manager', 'viewer']), validate(exportSchema), (req, res, next) => {
     (async () => {
         const { type, format, filters } = req.body;
-        const { filename, csv, count } = await ExportService.export(type, filters, format, req.user);
+        const { filename, csv, pdf, count } = await ExportService.export(type, filters, format, req.user);
 
         await LogService.logAction({
             userId: req.user._id,
@@ -36,6 +36,12 @@ router.post('/', roleMiddleware(['owner', 'manager', 'viewer']), validate(export
             diff: { format, count },
             note: `تصدير ${type} بصيغة ${format} (${count} سطر)`
         });
+
+        if (pdf) {
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+            return res.send(pdf);
+        }
 
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

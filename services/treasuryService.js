@@ -1,6 +1,6 @@
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
 import TreasuryBalance from '../models/TreasuryBalance.js';
-import { boundedRange, parsePagination, MAX_LIMIT } from '../lib/paginate.js';
+import { boundedRange, MAX_LIMIT } from '../lib/paginate.js';
 import CashboxDaily from '../models/CashboxDaily.js';
 import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
@@ -574,32 +574,65 @@ export const TreasuryService = {
     },
 
     /**
-     * Get all transactions for date range
+     * Get transactions for a date range — paginated, with an optional
+     * dashboard `category` (supplier_payments / shop_expenses) using the
+     * same taxonomy as the summary splits and the CSV/PDF export.
+     * Returns `{ transactions, total, page, limit }`; `total` covers the
+     * whole window so the UI never mistakes a page for the full ledger.
      */
-    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100, maxDays = 90 } = {}) {
-        const query = {};
-
+    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100, maxDays = 90, category = null } = {}) {
         // T-PERF-01: default 30d window, hard-capped. The cap is configurable
         // per-call (e.g. the dedicated history endpoint widens to 365 days).
         const range = boundedRange({ startDate, endDate }, { defaultDays: 30, maxDays });
-        query.date = { $gte: range.startDate, $lte: range.endDate };
 
-        if (type && type !== 'ALL') {
-            query.type = type;
-        }
+        const isSupplier = category === 'supplier_payments';
+        const isShop = category === 'shop_expenses';
 
-        if (partnerId) {
-            query.partnerId = partnerId;
-        }
+        const match = { date: { $gte: range.startDate, $lte: range.endDate } };
+        if (type && type !== 'ALL') match.type = type;
+        if (partnerId) match.partnerId = partnerId;
+        if (isSupplier || isShop) match.type = 'EXPENSE';
+        if (isShop) match.referenceType = { $in: ['Manual', 'SalesReturn'] };
+        if (isSupplier) match.$or = [{ referenceType: 'PurchaseOrder' }, { referenceType: 'Debt' }];
 
-        // T-PERF-01: bounded page size (default 100, max MAX_LIMIT)
-        const { skip } = parsePagination({ page });
+        // T-PERF-01: bounded page size (default 100, max MAX_LIMIT).
+        // The skip MUST derive from the same capped limit, not the
+        // helper's default, or pages beyond the first come back empty.
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
         const cappedLimit = Math.min(Math.max(1, parseInt(limit, 10) || 100), MAX_LIMIT);
+        const skip = (pageNum - 1) * cappedLimit;
 
-        return await TreasuryTransaction.find(query)
-            .sort({ date: -1 })
-            .skip(skip)
-            .limit(cappedLimit)
+        // Supplier narrowing needs the linked debt's debtorType — one
+        // $lookup inside the aggregation so both the total and the page
+        // agree (a customer-debt EXPENSE is never a supplier payment).
+        const lookupStages = isSupplier
+            ? [{ $lookup: { from: 'debts', localField: 'referenceId', foreignField: '_id', as: '_debt' } }]
+            : [];
+        const narrowStages = isSupplier
+            ? [{ $match: { $or: [{ referenceType: 'PurchaseOrder' }, { referenceType: 'Debt', '_debt.debtorType': 'Supplier' }] } }]
+            : [];
+
+        const [countRes] = await TreasuryTransaction.aggregate([
+            { $match: match },
+            ...lookupStages,
+            ...narrowStages,
+            { $count: 'n' },
+        ]);
+        const total = countRes?.n || 0;
+
+        const idRows = await TreasuryTransaction.aggregate([
+            { $match: match },
+            ...lookupStages,
+            ...narrowStages,
+            { $sort: { date: -1 } },
+            { $skip: skip },
+            { $limit: cappedLimit },
+            { $project: { _id: 1 } },
+        ]);
+        if (!idRows.length) return { transactions: [], total, page: pageNum, limit: cappedLimit };
+
+        const ids = idRows.map((r) => r._id);
+        const docs = await TreasuryTransaction.find({ _id: { $in: ids } })
             .populate('createdBy', 'name')
             .populate({
                 path: 'referenceId',
@@ -611,6 +644,35 @@ export const TreasuryService = {
                 ]
             })
             .lean();
+        const order = new Map(ids.map((id, i) => [String(id), i]));
+        docs.sort((a, b) => (order.get(String(a._id)) ?? 0) - (order.get(String(b._id)) ?? 0));
+
+        // UnifiedCollection rows point at a customer that refPath cannot
+        // populate (no such model) — attach the name in one batched lookup
+        // so the ledger never renders a '---' party for collections.
+        const refIdOf = (d) => {
+            const r = d.referenceId;
+            if (!r) return null;
+            if (typeof r === 'object') return r.name ? null : (r._id ? String(r._id) : null);
+            return String(r);
+        };
+        const ucIds = [...new Set(docs
+            .filter((d) => d.referenceType === 'UnifiedCollection')
+            .map(refIdOf)
+            .filter(Boolean))];
+        if (ucIds.length) {
+            const Customer = (await import('../models/Customer.js')).default;
+            const customers = await Customer.find({ _id: { $in: ucIds } }).select('name').lean();
+            const byId = new Map(customers.map((c) => [String(c._id), c]));
+            for (const d of docs) {
+                if (d.referenceType === 'UnifiedCollection' && d.referenceId) {
+                    const c = byId.get(String(d.referenceId));
+                    if (c) d.referenceId = { _id: c._id, name: c.name };
+                }
+            }
+        }
+
+        return { transactions: docs, total, page: pageNum, limit: cappedLimit };
     },
 
     /**

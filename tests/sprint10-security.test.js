@@ -98,7 +98,7 @@ describe('SEC-PII-001 — sourceNumber masked for non-privileged list responses'
     it('viewer gets masked (••••  last4), never the full sourceNumber', async () => {
         const res = await request.get('/api/treasury/transactions').set('Cookie', viewerCookie);
         ok(res, 'viewer transactions');
-        const list = res.body.data || [];
+        const list = res.body.data.transactions || [];
         // Our seeded tx is the most recent (the only m++) in this fresh DB window.
         const smallest = list
             .filter((t) => t.sourceNumber)
@@ -111,7 +111,7 @@ describe('SEC-PII-001 — sourceNumber masked for non-privileged list responses'
     it('owner sees the full sourceNumber', async () => {
         const res = await request.get('/api/treasury/transactions').set('Cookie', ownerCookie);
         ok(res, 'owner transactions');
-        const list = res.body.data || [];
+        const list = res.body.data.transactions || [];
         const match = list.find((t) => t.sourceNumber === customSource);
         expect(match).toBeTruthy();
         expect(match.sourceNumber).toBe(customSource);

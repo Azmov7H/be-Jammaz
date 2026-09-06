@@ -15,10 +15,11 @@ import { createTestApp, stopTestDb, seedUser } from './helpers.js';
 
 let request;
 let ownerCookie;
+let ownerUser;
 
 beforeAll(async () => {
     request = await createTestApp();
-    ({ cookie: ownerCookie } = await seedUser(request, { name: 'Treasury Coh', role: 'owner' }));
+    ({ cookie: ownerCookie, user: ownerUser } = await seedUser(request, { name: 'Treasury Coh', role: 'owner' }));
 }, 180000);
 
 afterAll(async () => {
@@ -99,5 +100,66 @@ describe('Treasury dashboard coherence', () => {
             .send(body({ category: 'supplier_payments', startDate: from, endDate: to }));
         expect(supplier.status).toBe(200);
         expect(supplier.text).not.toContain('coh-expense-seed');
+    });
+
+    it('ledger is paginated with a window-wide total', async () => {
+        const { from, to } = window_();
+        const q = (extra) => `/api/treasury/transactions?startDate=${encodeURIComponent(from)}&endDate=${encodeURIComponent(to)}${extra}`;
+        const p1 = await request.get(q('&page=1&limit=1')).set('Cookie', ownerCookie);
+        const p2 = await request.get(q('&page=2&limit=1')).set('Cookie', ownerCookie);
+        expect(p1.status).toBe(200);
+        expect(p1.body.data.transactions).toHaveLength(1);
+        expect(p1.body.data.total).toBeGreaterThanOrEqual(2);
+        expect(p2.body.data.transactions).toHaveLength(1);
+        expect(p2.body.data.total).toBe(p1.body.data.total);
+        expect(p2.body.data.transactions[0]._id).not.toBe(p1.body.data.transactions[0]._id);
+    });
+
+    it('ledger category narrows server-side like the export', async () => {
+        const { from, to } = window_();
+        const res = await request
+            .get(`/api/treasury/transactions?startDate=${encodeURIComponent(from)}&endDate=${encodeURIComponent(to)}&category=shop_expenses`)
+            .set('Cookie', ownerCookie);
+        expect(res.status).toBe(200);
+        expect(res.body.data.transactions.length).toBeGreaterThan(0);
+        for (const tx of res.body.data.transactions) {
+            expect(tx.type).toBe('EXPENSE');
+            expect(['Manual', 'SalesReturn']).toContain(tx.referenceType);
+        }
+    });
+
+    it('unified collections carry the customer name (no --- party)', async () => {
+        const created = await request.post('/api/customers').set('Cookie', ownerCookie).send({
+            name: `عميل uc-${Date.now()}`,
+            phone: `079${String(Date.now()).slice(-7)}`,
+            priceType: 'retail',
+        });
+        expect(created.status).toBeLessThan(300);
+        const { TreasuryService } = await import('../services/treasuryService.js');
+        await TreasuryService.recordUnifiedCollection(created.body.data, 250, ownerUser._id);
+        const { from, to } = window_();
+        const res = await request
+            .get(`/api/treasury/transactions?startDate=${encodeURIComponent(from)}&endDate=${encodeURIComponent(to)}&limit=100`)
+            .set('Cookie', ownerCookie);
+        const uc = res.body.data.transactions.find((t) => t.referenceType === 'UnifiedCollection');
+        expect(uc).toBeDefined();
+        expect(uc.referenceId?.name).toBe(created.body.data.name);
+    });
+
+    it('exports a real Arabic PDF for treasuryTransactions', async () => {
+        const { from, to } = window_();
+        const res = await request.post('/api/export')
+            .set('Cookie', ownerCookie)
+            .send({ type: 'treasuryTransactions', format: 'pdf', filters: { startDate: from, endDate: to } });
+        expect(res.status).toBe(200);
+        expect(res.headers['content-type']).toContain('application/pdf');
+        expect(Buffer.from(res.body).slice(0, 5).toString()).toBe('%PDF-');
+    });
+
+    it('rejects PDF for non-treasury modules', async () => {
+        const res = await request.post('/api/export')
+            .set('Cookie', ownerCookie)
+            .send({ type: 'customers', format: 'pdf', filters: {} });
+        expect(res.status).toBe(400);
     });
 });

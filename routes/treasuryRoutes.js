@@ -48,13 +48,13 @@ router.post('/reconcile', roleMiddleware(['owner', 'manager']), validate(reconci
 
 // Get transactions history
 router.get('/transactions', routeHandler(async (req) => {
-    const { startDate, endDate, type, page, limit } = req.query;
+    const { startDate, endDate, type, page, limit, category } = req.query;
     // T-RPT-02: the dedicated history endpoint serves a "transaction log"
     // surface where the user may legitimately want a year of data. Allow
     // up to 365 days here (vs the default 90-day cap used by the
     // /summary endpoint) so manual switching to "Year" doesn't blank
     // the page. Hard cap is still enforced server-side.
-    const result = await TreasuryService.getTransactions(startDate, endDate, type, null, { page, limit, maxDays: 365 });
+    const result = await TreasuryService.getTransactions(startDate, endDate, type, null, { page, limit, maxDays: 365, category });
     return maskSourceInResult(result, req.user.role);
 }));
 

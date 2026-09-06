@@ -266,7 +266,7 @@ export const ExportService = {
         await dbConnect();
         const mod = MODULES[type];
         if (!mod) throw new NotFoundError(`نوع التصدير غير مدعوم: ${type}`);
-        if (format !== 'csv' && format !== 'xlsx') throw new BadRequestError('صيغة التصدير غير مدعومة');
+        if (format !== 'csv' && format !== 'pdf') throw new BadRequestError('صيغة التصدير غير مدعومة');
 
         // Validate filters: only allow-listed keys (SEC-EXP-002).
         const allowed = FILTER_SCHEMAS[type] || [];
@@ -281,6 +281,19 @@ export const ExportService = {
         const cols = mod.columns.filter((c) => !c.sensitive || privileged);
 
         const rows = await mod.query(filters);
+
+        if (format === 'pdf') {
+            if (type !== 'treasuryTransactions') {
+                throw new BadRequestError('تصدير PDF متاح لحركة الخزينة فقط حاليًا');
+            }
+            const { buildTreasuryPdf } = await import('./treasuryPdfExport.js');
+            const pdf = await buildTreasuryPdf(rows.map((r) => mod.map(r)), {
+                from: filters.startDate,
+                to: filters.endDate,
+            });
+            const stamp = new Date().toISOString().slice(0, 10);
+            return { filename: `${type}_${stamp}.pdf`, pdf, count: rows.length };
+        }
 
         let csv = '\uFEFF'; // UTF-8 BOM for Arabic in Excel.
         csv += cols.map((c) => TO_CSV(c.header)).join(',') + '\r\n';

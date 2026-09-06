@@ -89,7 +89,7 @@ describe('T-PERF-04: deleteTransactionByRef consistency', () => {
 
         const list = await app.get('/api/treasury/transactions?limit=10')
             .set('Cookie', ownerCookie).expect(200);
-        const manual = list.body.data.filter(t => t.referenceType === 'Manual').slice(-2);
+        const manual = list.body.data.transactions.filter(t => t.referenceType === 'Manual').slice(-2);
 
         let expected = b0;
         for (const tx of manual) expected += tx.amount;

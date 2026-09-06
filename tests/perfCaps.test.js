@@ -44,7 +44,7 @@ describe('T-PERF-01 sweep: pagination caps', () => {
         const res = await get(
             '/api/treasury/transactions?limit=5000&startDate=2020-01-01&endDate=2026-08-24'
         ).expect(200);
-        expect(res.body.data.length).toBeLessThanOrEqual(100);
+        expect(res.body.data.transactions.length).toBeLessThanOrEqual(100);
     });
 
     it('accounting entries returns paged envelope + caps limit', async () => {
