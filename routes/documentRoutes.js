@@ -7,6 +7,8 @@
  *
  * Endpoints:
  *   GET    /                              health/list of types
+ *   GET    /:type/data                    JSON DocumentData (no id)      (filterable)
+ *   GET    /:type/:id/data                JSON DocumentData (single record) (filterable)
  *   GET    /:type                         preview HTML (no id)         (filterable)
  *   GET    /:type/:id                     preview HTML (single record) (filterable)
  *   GET    /:type/export?format=...       export (no id)               (filterable)
@@ -26,7 +28,7 @@ import {
     DOCUMENT_TYPE_VALUES,
     OUTPUT_FORMAT_VALUES,
 } from '../lib/documentRegistry.js';
-import { DocumentController } from '../document/index.js';
+import { DocumentController, DocumentService } from '../document/index.js';
 import { NotFoundError } from '../lib/errors.js';
 import { listDocumentTypes } from '../lib/documentRegistry.js';
 
@@ -51,6 +53,28 @@ const formatQuerySchema = z.object({
 router.get('/', routeHandler(async () => {
     return { types: listDocumentTypes() };
 }));
+
+/**
+ * GET /api/documents/:type/data — JSON DocumentData (no id).
+ * The read model for frontend preview tables (getDocumentData).
+ * Defined before /:type/:id so "data" is never parsed as an id.
+ */
+router.get('/:type/data',
+    validateParams(typeOnlyParamSchema),
+    routeHandler(async (req) => DocumentService.getData(
+        req.params.type, { ...req.query }, { user: req.user }
+    )),
+);
+
+/**
+ * GET /api/documents/:type/:id/data — JSON DocumentData (single record).
+ */
+router.get('/:type/:id/data',
+    validateParams(idParamSchema),
+    routeHandler(async (req) => DocumentService.getData(
+        req.params.type, { id: req.params.id, ...req.query }, { user: req.user }
+    )),
+);
 
 /**
  * GET /api/documents/:type — preview HTML (no id; only for types that don't require one).
