@@ -324,7 +324,7 @@ function renderCustomerStatementPdf(data) {
     } = data || {};
 
     const doc = newDoc({ primaryColor: branding.primaryColor || '#1B3C73', title: 'CUSTOMER_STATEMENT' });
-    drawHeader(doc, { branding, title: 'كشف حساب عميل', number: customer.name, date: generatedAt });
+    drawHeader(doc, { branding, title: data.title || 'كشف حساب عميل', number: customer.name, date: generatedAt });
 
     putText(doc, `الفترة: من ${fmtDateAr(period.startDate)} إلى ${fmtDateAr(period.endDate)}`, MARGIN, doc.y, {
         size: 9, width: CONTENT_WIDTH,
@@ -402,11 +402,27 @@ function renderCustomerStatementPdf(data) {
     return toBuffer(doc);
 }
 
+function renderSupplierStatementPdf(data) {
+    // Supplier payload mirrors the customer one (supplier ↔ customer);
+    // reuse the statement layout with the supplier party + title.
+    const { supplier = {}, ...rest } = data || {};
+    return renderCustomerStatementPdf({
+        ...rest,
+        customer: {
+            name: supplier.name,
+            phone: supplier.phone,
+            address: supplier.address,
+            taxNumber: supplier.taxNumber,
+        },
+    });
+}
+
 const RENDERERS = Object.create(null);
 RENDERERS[DOCUMENT_TYPES.SALE_INVOICE] = renderSaleInvoicePdf;
 RENDERERS[DOCUMENT_TYPES.PURCHASE_INVOICE] = renderPurchaseInvoicePdf;
 RENDERERS[DOCUMENT_TYPES.CUSTOMER_COLLECTION_RECEIPT] = renderCustomerCollectionReceiptPdf;
 RENDERERS[DOCUMENT_TYPES.CUSTOMER_ACCOUNT_STATEMENT] = renderCustomerStatementPdf;
+RENDERERS[DOCUMENT_TYPES.SUPPLIER_ACCOUNT_STATEMENT] = renderSupplierStatementPdf;
 
 export async function renderPdf(type, data) {
     const fn = RENDERERS[type];
@@ -416,4 +432,4 @@ export async function renderPdf(type, data) {
     return await fn(data);
 }
 
-export { renderSaleInvoicePdf, renderPurchaseInvoicePdf, renderCustomerCollectionReceiptPdf, renderCustomerStatementPdf };
+export { renderSaleInvoicePdf, renderPurchaseInvoicePdf, renderCustomerCollectionReceiptPdf, renderCustomerStatementPdf, renderSupplierStatementPdf };

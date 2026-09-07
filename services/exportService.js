@@ -112,7 +112,7 @@ const MODULES = {
             if (filters.startDate || filters.endDate) {
                 q.date = {};
                 if (filters.startDate) q.date.$gte = new Date(filters.startDate);
-                if (filters.endDate) q.date.$lte = new Date(filters.endDate);
+                if (filters.endDate) q.date.$lte = endOfDayIfDateOnly(filters.endDate);
             }
             if (filters.paymentType) q.paymentType = filters.paymentType;
             if (filters.paymentStatus) q.paymentStatus = filters.paymentStatus;
@@ -154,7 +154,7 @@ const MODULES = {
             if (filters.startDate || filters.endDate) {
                 q.createdAt = {};
                 if (filters.startDate) q.createdAt.$gte = new Date(filters.startDate);
-                if (filters.endDate) q.createdAt.$lte = new Date(filters.endDate);
+                if (filters.endDate) q.createdAt.$lte = endOfDayIfDateOnly(filters.endDate);
             }
             if (filters.paymentType) q.paymentType = filters.paymentType;
             if (filters.paymentStatus) q.paymentStatus = filters.paymentStatus;

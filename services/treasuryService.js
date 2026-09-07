@@ -838,7 +838,11 @@ export const TreasuryService = {
                     _id: {
                         $dateToString: {
                             format: granularity === 'month' ? '%Y-%m' : '%Y-%m-%d',
-                            date: '$date'
+                            date: '$date',
+                            // Business runs on Egypt wall-clock: without this,
+                            // late-evening Cairo transactions bucket into the
+                            // next UTC day on the chart.
+                            timezone: 'Africa/Cairo'
                         }
                     },
                     income: { $sum: { $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0] } },

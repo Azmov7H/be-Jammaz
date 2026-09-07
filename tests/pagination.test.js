@@ -52,4 +52,20 @@ describe('T-PERF-01: boundedRange', () => {
         );
         expect(Number.isNaN(r.startDate.getTime())).toBe(false);
     });
+
+    it('expands a date-only end bound to end-of-day (same-day rows included)', () => {
+        const r = boundedRange({ startDate: '2026-08-10', endDate: '2026-08-15' }, {});
+        expect(r.endDate.getHours()).toBe(23);
+        expect(r.endDate.getMinutes()).toBe(59);
+        expect(r.endDate.getSeconds()).toBe(59);
+        expect(r.endDate.getDate()).toBe(15);
+    });
+
+    it('leaves full-datetime ends untouched', () => {
+        const r = boundedRange(
+            { startDate: '2026-08-10', endDate: '2026-08-15T10:30:00Z' },
+            { maxDays: 365 }
+        );
+        expect(r.endDate.toISOString()).toBe('2026-08-15T10:30:00.000Z');
+    });
 });

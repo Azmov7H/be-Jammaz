@@ -127,11 +127,17 @@ export const DocumentService = {
         const entry = getDocumentEntry(type);
         assertFormatSupported(entry, format);
 
-        const data = await this.getData(type, params, { user });
+        // `autoprint` is a route-level concern (open the browser print
+        // dialog on load), NOT a document filter — strip it before
+        // validation so ?autoprint=1 doesn't 400 (it isn't in filterSchema).
+        const { autoprint, ...dataParams } = params;
+        const data = await this.getData(type, dataParams, { user });
 
         if (format === OUTPUT_FORMATS.HTML || format === OUTPUT_FORMATS.PRINT) {
             const html = format === OUTPUT_FORMATS.PRINT
-                ? renderPrintHtml(type, data, { autoPrint: false })
+                ? renderPrintHtml(type, data, {
+                    autoPrint: autoprint === true || autoprint === '1' || autoprint === 'true',
+                })
                 : renderHtml(type, data);
             await this._audit(type, params, user, format, data);
             return {

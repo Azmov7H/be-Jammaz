@@ -53,6 +53,16 @@ describe('renderPdf dispatcher', () => {
         expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     });
 
+    it('routes SUPPLIER_ACCOUNT_STATEMENT to the statement renderer', async () => {
+        const buf = await renderPdf('SUPPLIER_ACCOUNT_STATEMENT', {
+            branding: {}, title: 'كشف حساب مورد',
+            supplier: { name: 'مورد الاختبار' }, period: {},
+            openingBalance: 0, closingBalance: 0, currentSnapshotBalance: 0,
+            balanceDelta: '0.00', totals: { debits: 0, credits: 0 }, lines: [],
+        });
+        expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    });
+
     it('rejects unimplemented types with AppError 501, not a 500', async () => {
         await expect(renderPdf('SUPPLIER_PAYMENT_RECEIPT', {}))
             .rejects.toMatchObject({ statusCode: 501 });
