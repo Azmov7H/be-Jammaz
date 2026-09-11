@@ -56,7 +56,21 @@ export const PaymentService = {
         await dbConnect();
         // T-BIZ-01: all-or-nothing across invoice/debt/customer/treasury/cashbox
         return withRetry(() => withTransaction(async (session) => {
-            await invoice.recordPayment(amount, method, note, userId, session, sourceNumber);
+            // FIN-OVERDEDUCT: reject over-collection up front. recordPayment
+            // caps silently and the debt path fails with a misleading
+            // "not found" — neither tells the user the amount exceeds what
+            // is actually owed. Reload in-txn so the check sees latest state.
+            const freshInvoice = await Invoice.findById(invoice?._id ?? invoice).populate('customer').session(session);
+            if (!freshInvoice) throw new NotFoundError('الفاتورة غير موجودة');
+            const invoiceRemaining = Number((Number(freshInvoice.total || 0) - Number(freshInvoice.paidAmount || 0)).toFixed(2));
+            if (Number(amount) - invoiceRemaining > 0.01) {
+                throw new BadRequestError(
+                    `المبلغ المطلوب (${Number(amount).toLocaleString()}) يتجاوز المبلغ المتبقي على الفاتورة (${invoiceRemaining.toLocaleString()})`
+                );
+            }
+
+            await freshInvoice.recordPayment(amount, method, note, userId, session, sourceNumber);
+            invoice = freshInvoice;
 
             faultInject('recordCustomerPayment:afterInvoice');
 
@@ -115,6 +129,18 @@ export const PaymentService = {
                 throw new NotFoundError('لا توجد ديون مستحقة لهذا العميل');
             }
 
+            // FIN-OVERDEDUCT: the collectible ceiling is the sum of live debt
+            // remainders plus any positive balance drift (manual adjustments).
+            // Anything above it would drive Customer.balance negative — the
+            // old code $inc'd the residual unconditionally.
+            const debtOwed = activeDebts.reduce((s, d) => s + Number(d.remainingAmount || 0), 0);
+            const collectible = Number((debtOwed + Math.max(0, Number(customer.balance || 0) - debtOwed)).toFixed(2));
+            if (Number(amount) - collectible > 0.01) {
+                throw new BadRequestError(
+                    `المبلغ المطلوب (${Number(amount).toLocaleString()}) يتجاوز إجمالي المديونية المستحقة على العميل (${collectible.toLocaleString()})`
+                );
+            }
+
             let remainingAmount = amount;
             const appliedPayments = [];
 
@@ -155,8 +181,16 @@ export const PaymentService = {
             }
 
             if (remainingAmount > 0) {
-                // Remaining amount becomes a general credit (reducing the balance)
-                await Customer.findByIdAndUpdate(customerId, { $inc: { balance: -remainingAmount } }, { session });
+                // FIN-OVERDEDUCT: guarded so a concurrent collection cannot
+                // slip the residual below zero (pre-check passed for both).
+                const credited = await Customer.findOneAndUpdate(
+                    { _id: customerId, balance: { $gte: remainingAmount } },
+                    { $inc: { balance: -remainingAmount } },
+                    { session }
+                );
+                if (!credited) {
+                    throw new BadRequestError('تعذر إتمام التحصيل: تجاوز المبلغ الرصيد المتاح (محاولة متزامنة؟)');
+                }
             }
 
             await this.updateSchedulesAfterPayment(customerId, 'Customer', amount, session);
@@ -211,7 +245,18 @@ export const PaymentService = {
 
         // T-BIZ-01: PO + debt/supplier + treasury in one txn
         return withRetry(() => withTransaction(async (session) => {
-            const po = poDoc;
+            // Reload in-txn so the overpay check below sees latest state.
+            const po = await poDoc.constructor.findById(poDoc._id).session(session);
+            if (!po) throw new NotFoundError('أمر الشراء غير موجود');
+            // FIN-OVERDEDUCT: reject over-payment up front (same rationale
+            // as recordCustomerPayment — the $min pipeline caps silently and
+            // the no-debt fallback $inc is unbounded).
+            const poRemaining = Number((Number(po.totalCost || 0) - Number(po.paidAmount || 0)).toFixed(2));
+            if (Number(amount) - poRemaining > 0.01) {
+                throw new BadRequestError(
+                    `المبلغ المطلوب (${Number(amount).toLocaleString()}) يتجاوز المبلغ المتبقي على أمر الشراء (${poRemaining.toLocaleString()})`
+                );
+            }
             // Atomic capped increment on the PO (T-DB-06 primitive)
             const updatedPo = await po.constructor.findOneAndUpdate(
                 { _id: po._id },
@@ -292,7 +337,17 @@ export const PaymentService = {
 
         // T-BIZ-01: manual debt payment all-or-nothing
         return withRetry(() => withTransaction(async (session) => {
-            const debt = debtDoc;
+            // Reload in-txn so the overpay check below sees latest state.
+            const debt = await Debt.findById(debtDoc._id).session(session);
+            if (!debt) throw new NotFoundError('الدين غير موجود');
+            // FIN-OVERDEDUCT: clear overpay message instead of the misleading
+            // "not found" from the $gte guard inside updateBalance.
+            const debtRemaining = Number(Number(debt.remainingAmount || 0).toFixed(2));
+            if (Number(amount) - debtRemaining > 0.01) {
+                throw new BadRequestError(
+                    `المبلغ المطلوب (${Number(amount).toLocaleString()}) يتجاوز المبلغ المتبقي على المديونية (${debtRemaining.toLocaleString()})`
+                );
+            }
             if (debt.debtorType === 'Customer') {
                 await this.updateSchedulesAfterPayment(debt.debtorId, 'Customer', amount, session);
             } else if (debt.debtorType === 'Supplier') {

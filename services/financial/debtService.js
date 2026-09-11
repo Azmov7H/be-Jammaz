@@ -169,6 +169,25 @@ export class DebtService {
             const debt = await Debt.findById(id).populate('debtorId', 'name').session(session);
             if (!debt) throw new NotFoundError('Debt not found');
 
+            // FIN-OVERDEDUCT: remaining above original means negative
+            // collected (impossible progress bars, corrupt statements).
+            // Finite/>=0 guards turn silent cast 500s into clear 400s.
+            for (const field of ['originalAmount', 'remainingAmount']) {
+                if (data[field] !== undefined) {
+                    const v = Number(data[field]);
+                    if (!Number.isFinite(v) || v < 0) {
+                        throw new BadRequestError('قيمة المديونية يجب أن تكون رقمًا موجبًا');
+                    }
+                }
+            }
+            const nextOriginal = data.originalAmount !== undefined ? Number(data.originalAmount) : debt.originalAmount;
+            const nextRemaining = data.remainingAmount !== undefined ? Number(data.remainingAmount) : debt.remainingAmount;
+            if (nextRemaining - nextOriginal > 0.01) {
+                throw new BadRequestError(
+                    `المبلغ المتبقي (${nextRemaining.toLocaleString()}) لا يمكن أن يتجاوز أصل المديونية (${nextOriginal.toLocaleString()})`
+                );
+            }
+
             // Calculate old collected amount before changes
             const oldCollectedAmount = debt.originalAmount - debt.remainingAmount;
 
@@ -574,14 +593,21 @@ export class DebtService {
         const debt = await Debt.findById(id).session(session);
         if (!debt) throw new NotFoundError('Debt not found');
 
-        // 1. Reverse Parent Balance
+        // 1. Reverse Parent Balance — guarded so a diverged ledger (balance
+        // below the debt's remainder) can never be pushed negative by a
+        // delete; that state needs review, not a silent corrupt write.
         const Model = debt.debtorType === 'Customer'
             ? (await import('../../models/Customer.js')).default
             : (await import('../../models/Supplier.js')).default;
 
-        await Model.findByIdAndUpdate(debt.debtorId, {
-            $inc: { balance: -debt.remainingAmount }
-        }).session(session);
+        const reversed = await Model.findOneAndUpdate(
+            { _id: debt.debtorId, balance: { $gte: debt.remainingAmount } },
+            { $inc: { balance: -debt.remainingAmount } },
+            { session }
+        );
+        if (!reversed && debt.remainingAmount > 0.01) {
+            throw new BadRequestError('تعذر حذف المديونية: رصيد الطرف أقل من المبلغ المتبقي — راجع السجلات قبل الحذف');
+        }
 
         // 2. Delete Schedules
         const { default: PaymentSchedule } = await import('../../models/PaymentSchedule.js');

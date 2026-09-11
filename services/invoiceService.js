@@ -6,7 +6,7 @@ import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import { SaleService } from './financial/saleService.js';
 import dbConnect from '../lib/db.js';
-import { NotFoundError } from '../lib/errors.js';
+import { NotFoundError, BadRequestError } from '../lib/errors.js';
 import { nextDocumentNumber } from '../lib/counters.js';
 import mongoose from 'mongoose';
 import { AppError } from '../middlewares/errorHandler.js';
@@ -63,6 +63,21 @@ async create(data, userId) {
 
             const total = Number((subtotal + Number(tax)).toFixed(2));
             const profit = total - totalCost;
+
+            // FIN-OVERDEDUCT: the credit decrement in recordSale is a guarded
+            // no-op on insufficient funds — without this check the invoice
+            // would book a discount that was never deducted (double-spend).
+            const creditToUse = Number(usedCreditBalance || 0);
+            if (creditToUse > 0 && paymentType !== 'credit') {
+                if (!invoiceCustomer) throw new NotFoundError('العميل غير موجود');
+                const availableCredit = Number(Number(invoiceCustomer.creditBalance || 0).toFixed(2));
+                const maxUsable = Math.min(total, availableCredit);
+                if (creditToUse - maxUsable > 0.01) {
+                    throw new BadRequestError(
+                        `رصيد العميل الدائن المتاح (${availableCredit.toLocaleString()}) لا يكفي لخصم (${creditToUse.toLocaleString()}) من هذه الفاتورة`
+                    );
+                }
+            }
 
             // 2. Resolve Customer Info
             const { finalName, finalPhone } = await this._resolveCustomerDetails(customerId, customerName, customerPhone, session);
