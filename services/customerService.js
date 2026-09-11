@@ -47,6 +47,12 @@ export const CustomerService = {
 
         const { openingBalance, openingBalanceType, ...customerData } = data;
 
+        // T-DB-03b: sparse-unique link index treats explicit null as a value —
+        // the SECOND unlinked customer dies with E11000. Omit instead of null.
+        if (customerData.linkedSupplier == null || customerData.linkedSupplier === '') {
+            delete customerData.linkedSupplier;
+        }
+
         const existing = await Customer.findOne({ phone: customerData.phone });
         if (existing) {
             throw new ConflictError('رقم الهاتف مستخدم بالفعل لعميل آخر');
@@ -115,12 +121,19 @@ export const CustomerService = {
     async update(id, data) {
         await dbConnect();
 
-        if (data.phone) {
-            const existing = await Customer.findOne({ phone: data.phone, _id: { $ne: id } });
+        // T-DB-03b: same null-link guard as create (findByIdAndUpdate would
+        // otherwise $set an explicit null and hit the unique index).
+        const updateData = { ...data };
+        if (updateData.linkedSupplier == null || updateData.linkedSupplier === '') {
+            delete updateData.linkedSupplier;
+        }
+
+        if (updateData.phone) {
+            const existing = await Customer.findOne({ phone: updateData.phone, _id: { $ne: id } });
             if (existing) throw new ConflictError('رقم الهاتف مستخدم بالفعل لعميل آخر');
         }
 
-        const customer = await Customer.findByIdAndUpdate(id, data, { new: true });
+        const customer = await Customer.findByIdAndUpdate(id, updateData, { new: true });
         if (!customer) throw new NotFoundError('Customer not found');
 
         return customer;

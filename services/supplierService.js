@@ -46,6 +46,12 @@ export const SupplierService = {
 
         const { openingBalance, openingBalanceType, ...supplierData } = data;
 
+        // T-DB-03b: sparse-unique link index treats explicit null as a value —
+        // the SECOND unlinked supplier dies with E11000. Omit instead of null.
+        if (supplierData.linkedCustomer == null || supplierData.linkedCustomer === '') {
+            delete supplierData.linkedCustomer;
+        }
+
         const existing = await Supplier.findOne({ name: supplierData.name });
         if (existing) {
             throw new ConflictError('اسم المورد موجود بالفعل');
@@ -105,7 +111,13 @@ export const SupplierService = {
 
     async update(id, data) {
         await dbConnect();
-        const supplier = await Supplier.findByIdAndUpdate(id, data, { new: true });
+        // T-DB-03b: same null-link guard as create (findByIdAndUpdate would
+        // otherwise $set an explicit null and hit the unique index).
+        const updateData = { ...data };
+        if (updateData.linkedCustomer == null || updateData.linkedCustomer === '') {
+            delete updateData.linkedCustomer;
+        }
+        const supplier = await Supplier.findByIdAndUpdate(id, updateData, { new: true });
         if (!supplier) throw new NotFoundError('Supplier not found');
         return supplier;
     },

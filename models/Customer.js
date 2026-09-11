@@ -39,7 +39,16 @@ const CustomerSchema = new mongoose.Schema({
     // Customer ↔ Supplier unification (Sprint 7 foundation, FIN-MDL-005)
     taxNumber: { type: String, maxlength: 50 },
     isSupplier: { type: Boolean, default: false },
-    linkedSupplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', sparse: true, unique: true },
+    // T-DB-03b: sparse-unique treats an explicit null as an indexed value, so
+    // the SECOND unlinked insert dies with E11000. The setter coerces null/''
+    // to undefined (field omitted) — services strip it too for update paths.
+    linkedSupplier: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Supplier',
+        sparse: true,
+        unique: true,
+        set: (v) => (v == null || v === '' ? undefined : v)
+    },
 
     totalPurchases: { type: Number, default: 0 },
     lastPurchaseDate: Date,
