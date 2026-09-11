@@ -27,6 +27,16 @@ export const METHOD_EXPENSE_FIELD = {
     instapay: 'instapayExpenses',
 };
 
+// FIN-CASHBOX-01: bucket lists for the atomic rollup recompute in
+// updateDailyCashbox. Must stay identical to the sums in CashboxDaily
+// pre('save') — both encode the same derived totals.
+export const CASHBOX_INCOME_BUCKETS = [
+    'salesIncome', 'bankIncome', 'walletIncome', 'checkIncome', 'instapayIncome'
+];
+export const CASHBOX_EXPENSE_BUCKETS = [
+    'purchaseExpenses', 'bankExpenses', 'walletExpenses', 'checkExpenses', 'instapayExpenses'
+];
+
 /**
  * Resolve the CashboxDaily aggregate field for a (method, type) pair.
  * @param {string} method payment method (cash/bank/wallet/check/instapay/...)
@@ -320,9 +330,50 @@ export const TreasuryService = {
         }
 
         if (Object.keys(incUpdate).length > 0) {
+            // FIN-CASHBOX-01 (T-03/M2): pipeline update applies the increments
+            // AND recomputes the derived rollups in the same atomic write.
+            // The old $inc bypassed pre('save'), leaving totalIncome /
+            // totalExpenses / netChange / closings stale until the next
+            // .save(). Formulas mirror CashboxDaily pre('save') — keep both
+            // in sync if either changes.
+            const nz = (f) => ({ $ifNull: [`$${f}`, 0] });
+            const applyStage = { $set: {} };
+            for (const [field, amount] of Object.entries(incUpdate)) {
+                applyStage.$set[field] = { $add: [nz(field), amount] };
+            }
+            const incomeExpr = { $add: [
+                ...CASHBOX_INCOME_BUCKETS.map(nz),
+                { $ifNull: [{ $sum: '$manualIncome.amount' }, 0] }
+            ] };
+            const expenseExpr = { $add: [
+                ...CASHBOX_EXPENSE_BUCKETS.map(nz),
+                { $ifNull: [{ $sum: '$manualExpenses.amount' }, 0] }
+            ] };
             cashbox = await CashboxDaily.findOneAndUpdate(
                 { _id: cashbox._id },
-                { $inc: incUpdate },
+                [
+                    applyStage,
+                    { $set: { totalIncome: incomeExpr, totalExpenses: expenseExpr } },
+                    { $set: {
+                        netChange: { $subtract: ['$totalIncome', '$totalExpenses'] },
+                        closingBankBalance: { $subtract: [
+                            { $add: [nz('openingBankBalance'), nz('bankIncome')] }, nz('bankExpenses')
+                        ] },
+                        closingWalletBalance: { $subtract: [
+                            { $add: [nz('openingWalletBalance'), nz('walletIncome')] }, nz('walletExpenses')
+                        ] },
+                        closingCheckBalance: { $subtract: [
+                            { $add: [nz('openingCheckBalance'), nz('checkIncome')] }, nz('checkExpenses')
+                        ] },
+                        closingInstapayBalance: { $subtract: [
+                            { $add: [nz('openingInstapayBalance'), nz('instapayIncome')] }, nz('instapayExpenses')
+                        ] },
+                        difference: { $subtract: [
+                            nz('closingBalance'),
+                            { $add: [nz('openingBalance'), '$netChange'] }
+                        ] }
+                    } }
+                ],
                 { new: true, session }
             );
         }
@@ -350,7 +401,18 @@ export const TreasuryService = {
             cashbox = created[0];
         }
 
-        await cashbox.addIncome(amount, reason, userId, session);
+        // FIN-CASHBOX-01 (T-03): exactly ONE counting location. Channeled
+        // methods land in their method bucket (which feeds the totals);
+        // only cash/adjustment use manual[] (they have no bucket). The old
+        // code pushed manual[] AND $inc'd the bucket for non-cash methods,
+        // doubling totalIncome. The ledger row below keeps the full audit
+        // trail (description/createdBy/sourceNumber) either way.
+        if (method !== 'cash' && method !== 'adjustment') {
+            const updateField = fieldFor(method, 'INCOME');
+            cashbox = await this.updateDailyCashbox(date, { [updateField]: amount }, session);
+        } else {
+            await cashbox.addIncome(amount, reason, userId, session);
+        }
 
         // Also record in treasury transactions
         await this._createTransactions([{
@@ -364,20 +426,8 @@ export const TreasuryService = {
             createdBy: userId
         }], session);
 
-        // If it's bank/wallet/check/instapay, we need to update the specific fields too
-        // (CashboxDaily.addIncome only increments manualIncome array in its own way?)
-        // Wait, I should check CashboxDaily.addIncome implementation.
-        if (method !== 'cash' && method !== 'adjustment') {
-            const updateField = fieldFor(method, 'INCOME');
-            await this.updateDailyCashbox(date, { [updateField]: amount }, session);
-        }
-
         return cashbox;
     },
-
-    /**
-     * Add manual expense entry
-     */
     async addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null, sourceNumber = '') {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
@@ -396,7 +446,15 @@ export const TreasuryService = {
             cashbox = created[0];
         }
 
-        await cashbox.addExpense(amount, reason, category, userId, session);
+        // FIN-CASHBOX-01 (T-03): exactly ONE counting location — method
+        // bucket for channeled methods, manual[] for cash/adjustment only
+        // (same single-count rule as addManualIncome).
+        if (method !== 'cash' && method !== 'adjustment') {
+            const updateField = fieldFor(method, 'EXPENSE');
+            cashbox = await this.updateDailyCashbox(date, { [updateField]: amount }, session);
+        } else {
+            await cashbox.addExpense(amount, reason, category, userId, session);
+        }
 
         // Also record in treasury transactions
         await this._createTransactions([{
@@ -409,11 +467,6 @@ export const TreasuryService = {
             sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId
         }], session);
-
-        if (method !== 'cash' && method !== 'adjustment') {
-            const updateField = fieldFor(method, 'EXPENSE');
-            await this.updateDailyCashbox(date, { [updateField]: amount }, session);
-        }
 
         return cashbox;
     },
