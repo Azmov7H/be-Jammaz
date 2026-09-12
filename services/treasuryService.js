@@ -69,8 +69,77 @@ export function methodLabel(method) {
 export function maskSource(sourceNumber) {
     if (sourceNumber == null || String(sourceNumber).trim() === '') return '';
     const s = String(sourceNumber).trim();
-    if (s.length <= 4) return '****';
+    if (s.length <= 5) return `${s.slice(0, 1)}****${s.slice(-1)}`;
     return `${s.slice(0, 3)}****${s.slice(-2)}`;
+}
+
+/**
+ * FIN-UNDO-01 (T-05): exact-inverse cashbox reversal for one ledger row.
+ * Every write path routes its cashbox leg through fieldFor(method, type),
+ * so the reversal mirrors it by construction instead of assuming cash
+ * accumulators. Rules:
+ * - Manual cash/adjustment rows live ONLY in manual[] (except credit
+ *   refunds, flagged by meta.isCreditRefund, which wrote the EXPENSE
+ *   bucket): splice the entry, and nothing else.
+ * - Channeled-method Manual rows: splice the legacy double-write entry
+ *   when present (pre-T-03 rows), then reverse the method bucket (both
+ *   legacy and new rows wrote it).
+ * - 'adjustment' method: book correction, never touched cashbox — skip.
+ * - SalesReturn rows: the write was a NEGATIVE income $inc, so add back
+ *   to the INCOME bucket.
+ * - Everything else: decrement the exact fieldFor(method, type) bucket,
+ *   guarded — an insufficient bucket means diverged data that needs
+ *   review, not a silent negative.
+ * Mutates the passed cashbox doc (caller saves). Throws BadRequestError
+ * on divergence.
+ */
+export function reverseCashboxFor(tx, cashbox) {
+    const method = tx.method || 'cash';
+    const isCashLike = method === 'cash' || method === 'adjustment';
+
+    const spliceManual = (list) => {
+        const idx = (cashbox[list] || []).findIndex(
+            (e) => e.amount === tx.amount && e.reason === tx.description
+        );
+        if (idx > -1) {
+            cashbox[list].splice(idx, 1);
+            return true;
+        }
+        return false;
+    };
+
+    if (tx.referenceType === 'Manual' && isCashLike && !tx.meta?.isCreditRefund) {
+        // Cash/adjustment manuals exist only as manual[] entries.
+        const spliced = spliceManual(tx.type === 'INCOME' ? 'manualIncome' : 'manualExpenses');
+        if (!spliced) {
+            throw new BadRequestError(
+                'تعذر التراجع: القيد اليدوي غير موجود في اليومية — راجع السجلات قبل الحذف'
+            );
+        }
+        return;
+    }
+
+    if (tx.referenceType === 'Manual' && !isCashLike) {
+        // Legacy double-write rows (pre-T-03) keep their manual[] entry;
+        // new rows simply miss the splice. Both wrote the method bucket.
+        spliceManual(tx.type === 'INCOME' ? 'manualIncome' : 'manualExpenses');
+    }
+
+    if (method === 'adjustment') return; // book correction: no cashbox leg ever
+
+    if (tx.referenceType === 'SalesReturn') {
+        // Write was a negative INCOME $inc — add it back.
+        cashbox[fieldFor(method, 'INCOME')] += tx.amount;
+        return;
+    }
+
+    const bucket = fieldFor(method, tx.type);
+    if ((cashbox[bucket] || 0) - tx.amount < -0.01) {
+        throw new BadRequestError(
+            'تعذر التراجع: رصيد اليومية أقل من مبلغ المعاملة — راجع السجلات قبل الحذف'
+        );
+    }
+    cashbox[bucket] -= tx.amount;
 }
 
 /**
@@ -960,43 +1029,9 @@ export const TreasuryService = {
 
         const cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
         if (cashbox) {
-            if (transaction.type === 'INCOME') {
-                // Find and remove from manualIncome
-                const index = cashbox.manualIncome.findIndex(mi =>
-                    mi.amount === transaction.amount &&
-                    mi.reason === transaction.description
-                );
-                if (index > -1) {
-                    cashbox.manualIncome.splice(index, 1);
-                } else {
-                    // If not in manualIncome, it might be in salesIncome accumulator
-                    // We should decrease salesIncome if it was a Sale
-                    if (transaction.referenceType === 'Invoice') {
-                        cashbox.salesIncome -= transaction.amount;
-                    }
-                }
-            } else {
-                // Find and remove from manualExpenses
-                const index = cashbox.manualExpenses.findIndex(me =>
-                    me.amount === transaction.amount &&
-                    me.reason === transaction.description
-                );
-                if (index > -1) {
-                    cashbox.manualExpenses.splice(index, 1);
-                } else {
-                    // Purchase Expenses accumulator
-                    if (transaction.referenceType === 'PurchaseOrder') {
-                        cashbox.purchaseExpenses -= transaction.amount;
-                    }
-                }
-            }
-
-            // Sync method fields
-            if (transaction.method !== 'cash') {
-                const methodField = fieldFor(transaction.method, transaction.type);
-                cashbox[methodField] -= transaction.amount;
-            }
-
+            // FIN-UNDO-01 (T-05): exact-inverse reversal (no cash-accumulator
+            // assumption, no unguarded decrements).
+            reverseCashboxFor(transaction, cashbox);
             await cashbox.save({ session });
         }
 
@@ -1030,28 +1065,8 @@ export const TreasuryService = {
             if (!cashbox) continue;
 
             for (const transaction of txs) {
-                if (transaction.type === 'INCOME') {
-                    // Check manual first
-                    const mIdx = cashbox.manualIncome.findIndex(x => x.amount === transaction.amount && x.reason === transaction.description);
-                    if (mIdx > -1) {
-                        cashbox.manualIncome.splice(mIdx, 1);
-                    } else if (cashbox.salesIncome >= transaction.amount) {
-                        cashbox.salesIncome -= transaction.amount;
-                    }
-                } else if (transaction.type === 'EXPENSE') {
-                    const mIdx = cashbox.manualExpenses.findIndex(x => x.amount === transaction.amount && x.reason === transaction.description);
-                    if (mIdx > -1) {
-                        cashbox.manualExpenses.splice(mIdx, 1);
-                    } else if (cashbox.purchaseExpenses >= transaction.amount) {
-                        cashbox.purchaseExpenses -= transaction.amount;
-                    }
-                }
-
-                // Sync method fields
-                if (transaction.method !== 'cash') {
-                    const methodField = fieldFor(transaction.method, transaction.type);
-                    cashbox[methodField] -= transaction.amount;
-                }
+                // FIN-UNDO-01 (T-05): same exact-inverse rule as undoTransaction.
+                reverseCashboxFor(transaction, cashbox);
             }
 
             await cashbox.save({ session });
