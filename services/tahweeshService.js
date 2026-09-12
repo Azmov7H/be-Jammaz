@@ -1,8 +1,9 @@
 import dbConnect from '../lib/db.js';
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
-import { TreasuryService, fieldFor } from './treasuryService.js';
+import TahweeshBalance from '../models/TahweeshBalance.js';
+import { TreasuryService, fieldFor, ensureCashboxDay } from './treasuryService.js';
 import { withTransaction } from '../utils/dbUtils.js';
-import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError } from '../lib/errors.js';
 
 /**
  * FIN-TAHWEESH-02/03 — Tahweesh (set-aside) movements.
@@ -40,7 +41,6 @@ export const TahweeshService = {
                 'meta.transferId': transferId,
             }).session(session).lean();
             if (existing.length > 0) {
-                const { default: TahweeshBalance } = await import('../models/TahweeshBalance.js');
                 const bal = await TahweeshBalance.findById(TahweeshBalance.DOC_ID).session(session).lean();
                 return { legs: existing, tahweeshBalance: bal?.balance ?? 0, duplicate: true };
             }
@@ -53,6 +53,8 @@ export const TahweeshService = {
             }
 
             const stamp = new Date();
+            // _createTransactions moves TahweeshBalance for the tahweesh leg
+            // (T-11 hook) — no explicit $inc here, or it would double-move.
             const legs = await TreasuryService._createTransactions([
                 {
                     type: 'EXPENSE',
@@ -77,19 +79,86 @@ export const TahweeshService = {
                 }
             ], session);
 
-            // Source channel bucket moves; the tahweesh leg lives in its own
-            // balance doc (no daily bucket for the set-aside account).
-            await TreasuryService.updateDailyCashbox(stamp, {
-                [fieldFor(source, 'EXPENSE')]: value
-            }, session);
+            // Source channel leaves the drawer. Cash is booked as a manual
+            // cash-out (NOT purchaseExpenses — a transfer is not a purchase);
+            // channeled sources move their own bucket.
+            if (source === 'cash') {
+                const { cashbox } = await ensureCashboxDay(stamp, session);
+                await cashbox.addExpense(value, note || 'تحويل إلى التحويش', 'other', userId, session);
+            } else {
+                await TreasuryService.updateDailyCashbox(stamp, {
+                    [fieldFor(source, 'EXPENSE')]: value
+                }, session);
+            }
 
-            const { default: TahweeshBalance } = await import('../models/TahweeshBalance.js');
-            const bal = await TahweeshBalance.findOneAndUpdate(
-                { _id: TahweeshBalance.DOC_ID },
-                { $inc: { balance: value }, $set: { updatedAt: new Date() } },
-                { upsert: true, new: true, session }
-            );
-            return { legs, tahweeshBalance: bal.balance, duplicate: false };
+            const bal = await TahweeshBalance.findById(TahweeshBalance.DOC_ID).session(session).lean();
+            return { legs, tahweeshBalance: bal?.balance ?? 0, duplicate: false };
+        });
+    },
+
+    /**
+     * Return set-aside money to cash (un-set-aside). The reverse pair of a
+     * deposit: EXPENSE tahweesh + INCOME cash, same conservation rules.
+     * Funding a business payment is NOT a withdraw — spend through the
+     * payment paths with method:'tahweesh' instead (single-transaction rule).
+     */
+    async withdraw({ amount, note = '', transferId }, userId) {
+        await dbConnect();
+        const value = Number(amount);
+        if (!Number.isFinite(value) || value <= 0) {
+            throw new BadRequestError('مبلغ السحب يجب أن يكون أكبر من صفر');
+        }
+        if (!transferId) throw new BadRequestError('معرف التحويل مطلوب');
+
+        return withTransaction(async (session) => {
+            const existing = await TreasuryTransaction.find({
+                referenceType: 'TahweeshTransfer',
+                'meta.transferId': transferId,
+            }).session(session).lean();
+            if (existing.length > 0) {
+                const bal = await TahweeshBalance.findById(TahweeshBalance.DOC_ID).session(session).lean();
+                return { legs: existing, tahweeshBalance: bal?.balance ?? 0, duplicate: true };
+            }
+
+            const available = await TreasuryService.getTahweeshBalance();
+            if (value - available > 0.01) {
+                throw new BadRequestError(
+                    `المبلغ المطلوب (${value.toLocaleString()}) يتجاوز رصيد التحويش المتاح (${available.toLocaleString()})`
+                );
+            }
+
+            const stamp = new Date();
+            const legs = await TreasuryService._createTransactions([
+                {
+                    type: 'EXPENSE',
+                    amount: value,
+                    description: note || 'سحب من التحويش إلى الخزينة',
+                    referenceType: 'TahweeshTransfer',
+                    method: 'tahweesh',
+                    date: stamp,
+                    createdBy: userId,
+                    meta: { transferId, direction: 'withdraw' }
+                },
+                {
+                    type: 'INCOME',
+                    amount: value,
+                    description: note || 'استرداد من التحويش إلى الخزينة',
+                    referenceType: 'TahweeshTransfer',
+                    method: 'cash',
+                    date: stamp,
+                    createdBy: userId,
+                    meta: { transferId, direction: 'withdraw' }
+                }
+            ], session);
+
+            // Cash returns to the drawer as manual cash-in (NOT salesIncome —
+            // a return is not a sale). The hook already decremented the
+            // set-aside for the tahweesh leg.
+            const { cashbox } = await ensureCashboxDay(stamp, session);
+            await cashbox.addIncome(value, note || 'استرداد من التحويش', userId, session);
+
+            const bal = await TahweeshBalance.findById(TahweeshBalance.DOC_ID).session(session).lean();
+            return { legs, tahweeshBalance: bal?.balance ?? 0, duplicate: false };
         });
     },
 

@@ -23,7 +23,11 @@ export const paginationSchema = z.object({
     search: z.string().max(200).optional(),
 });
 
-const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay']).optional();
+const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay',
+    // FIN-TAHWEESH-03 (T-11): set-aside as a funding channel on spend paths.
+    // Input-only removal of 'bank' (T-08) is a frontend concern; the backend
+    // enum keeps history readable.
+    'tahweesh']).optional();
 
 // Shared transfer-source schema (SEC-VAL-001). Hardened beyond Zod: trimmed,
 // length-bounded (max 200), and rejects control characters + path separators
@@ -89,6 +93,12 @@ export const tahweeshTransferSchema = z.object({
             message: SOURCE_REQUIRED_MSG,
         });
     }
+});
+
+export const tahweeshWithdrawSchema = z.object({
+    amount: positiveMoney,
+    note: z.string().max(500).optional(),
+    transferId: z.string().uuid('معرف التحويل غير صالح'),
 });
 
 /**

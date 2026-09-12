@@ -3,7 +3,7 @@ import { TahweeshService } from '../services/tahweeshService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate } from '../lib/validate.js';
-import { tahweeshTransferSchema } from '../validations/index.js';
+import { tahweeshTransferSchema, tahweeshWithdrawSchema } from '../validations/index.js';
 
 const router = express.Router();
 
@@ -22,6 +22,13 @@ router.post('/deposit', roleMiddleware(['owner', 'manager']), validate(tahweeshT
         { source, amount, note, transferId, sourceNumber },
         req.user._id
     );
+}));
+
+// Return set-aside money to cash. Funding a business payment is NOT a
+// withdraw — spend through the payment paths with method:'tahweesh'.
+router.post('/withdraw', roleMiddleware(['owner', 'manager']), validate(tahweeshWithdrawSchema), routeHandler(async (req) => {
+    const { amount, note, transferId } = req.body;
+    return await TahweeshService.withdraw({ amount, note, transferId }, req.user._id);
 }));
 
 export default router;
