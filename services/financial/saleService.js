@@ -141,7 +141,7 @@ export const SaleService = {
             }
 
             // 2. Reverse Treasury Transactions
-            await TreasuryService.deleteTransactionByRef('Invoice', invoice._id, session);
+            await TreasuryService.deleteTransactionByRef('Invoice', invoice._id, session, userId);
 
             // 3. Update Customer Balance & Debt
             if (invoice.customer) {

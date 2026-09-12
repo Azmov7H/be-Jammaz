@@ -6,7 +6,8 @@ import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 
 import Debt from '../models/Debt.js';
-import { NotFoundError, BadRequestError } from '../lib/errors.js';
+import { NotFoundError, BadRequestError, ConflictError } from '../lib/errors.js';
+import { withTransaction } from '../utils/dbUtils.js';
 
 // Sprint 2 (FIN-SVC-001): canonical method -> CashboxDaily field mapping.
 // Replaces the scattered inline ternaries everywhere so instapay (and any
@@ -26,6 +27,32 @@ export const METHOD_EXPENSE_FIELD = {
     check: 'checkExpenses',
     instapay: 'instapayExpenses',
 };
+
+// FIN-CASHBOX-01: bucket lists for the atomic rollup recompute in
+// updateDailyCashbox. Must stay identical to the sums in CashboxDaily
+// pre('save') — both encode the same derived totals.
+export const CASHBOX_INCOME_BUCKETS = [
+    'salesIncome', 'bankIncome', 'walletIncome', 'checkIncome', 'instapayIncome'
+];
+export const CASHBOX_EXPENSE_BUCKETS = [
+    'purchaseExpenses', 'bankExpenses', 'walletExpenses', 'checkExpenses', 'instapayExpenses'
+];
+
+/**
+ * FIN-CASHBOX-02 (T-07): opening-balance carry for a new day doc. Every
+ * creation branch must use this — the old branches each carried a different
+ * subset (instapay was dropped everywhere, bank/wallet/check were dropped
+ * on manual-first days), breaking the per-method day chain.
+ */
+export function cashboxOpenings(previousDay) {
+    return {
+        openingBalance: previousDay?.closingBalance || 0,
+        openingBankBalance: previousDay?.closingBankBalance || 0,
+        openingWalletBalance: previousDay?.closingWalletBalance || 0,
+        openingCheckBalance: previousDay?.closingCheckBalance || 0,
+        openingInstapayBalance: previousDay?.closingInstapayBalance || 0,
+    };
+}
 
 /**
  * Resolve the CashboxDaily aggregate field for a (method, type) pair.
@@ -58,8 +85,77 @@ export function methodLabel(method) {
 export function maskSource(sourceNumber) {
     if (sourceNumber == null || String(sourceNumber).trim() === '') return '';
     const s = String(sourceNumber).trim();
-    if (s.length <= 4) return '****';
+    if (s.length <= 5) return `${s.slice(0, 1)}****${s.slice(-1)}`;
     return `${s.slice(0, 3)}****${s.slice(-2)}`;
+}
+
+/**
+ * FIN-UNDO-01 (T-05): exact-inverse cashbox reversal for one ledger row.
+ * Every write path routes its cashbox leg through fieldFor(method, type),
+ * so the reversal mirrors it by construction instead of assuming cash
+ * accumulators. Rules:
+ * - Manual cash/adjustment rows live ONLY in manual[] (except credit
+ *   refunds, flagged by meta.isCreditRefund, which wrote the EXPENSE
+ *   bucket): splice the entry, and nothing else.
+ * - Channeled-method Manual rows: splice the legacy double-write entry
+ *   when present (pre-T-03 rows), then reverse the method bucket (both
+ *   legacy and new rows wrote it).
+ * - 'adjustment' method: book correction, never touched cashbox — skip.
+ * - SalesReturn rows: the write was a NEGATIVE income $inc, so add back
+ *   to the INCOME bucket.
+ * - Everything else: decrement the exact fieldFor(method, type) bucket,
+ *   guarded — an insufficient bucket means diverged data that needs
+ *   review, not a silent negative.
+ * Mutates the passed cashbox doc (caller saves). Throws BadRequestError
+ * on divergence.
+ */
+export function reverseCashboxFor(tx, cashbox) {
+    const method = tx.method || 'cash';
+    const isCashLike = method === 'cash' || method === 'adjustment';
+
+    const spliceManual = (list) => {
+        const idx = (cashbox[list] || []).findIndex(
+            (e) => e.amount === tx.amount && e.reason === tx.description
+        );
+        if (idx > -1) {
+            cashbox[list].splice(idx, 1);
+            return true;
+        }
+        return false;
+    };
+
+    if (tx.referenceType === 'Manual' && isCashLike && !tx.meta?.isCreditRefund) {
+        // Cash/adjustment manuals exist only as manual[] entries.
+        const spliced = spliceManual(tx.type === 'INCOME' ? 'manualIncome' : 'manualExpenses');
+        if (!spliced) {
+            throw new BadRequestError(
+                'تعذر التراجع: القيد اليدوي غير موجود في اليومية — راجع السجلات قبل الحذف'
+            );
+        }
+        return;
+    }
+
+    if (tx.referenceType === 'Manual' && !isCashLike) {
+        // Legacy double-write rows (pre-T-03) keep their manual[] entry;
+        // new rows simply miss the splice. Both wrote the method bucket.
+        spliceManual(tx.type === 'INCOME' ? 'manualIncome' : 'manualExpenses');
+    }
+
+    if (method === 'adjustment') return; // book correction: no cashbox leg ever
+
+    if (tx.referenceType === 'SalesReturn') {
+        // Write was a negative INCOME $inc — add it back.
+        cashbox[fieldFor(method, 'INCOME')] += tx.amount;
+        return;
+    }
+
+    const bucket = fieldFor(method, tx.type);
+    if ((cashbox[bucket] || 0) - tx.amount < -0.01) {
+        throw new BadRequestError(
+            'تعذر التراجع: رصيد اليومية أقل من مبلغ المعاملة — راجع السجلات قبل الحذف'
+        );
+    }
+    cashbox[bucket] -= tx.amount;
 }
 
 /**
@@ -288,10 +384,7 @@ export const TreasuryService = {
 
             const created = await CashboxDaily.create([{
                 date: startOfDay,
-                openingBalance: previousDay?.closingBalance || 0,
-                openingBankBalance: previousDay?.closingBankBalance || 0,
-                openingWalletBalance: previousDay?.closingWalletBalance || 0,
-                openingCheckBalance: previousDay?.closingCheckBalance || 0,
+                ...cashboxOpenings(previousDay),
                 salesIncome: 0,
                 purchaseExpenses: 0,
                 bankIncome: 0,
@@ -305,13 +398,14 @@ export const TreasuryService = {
         }
 
         // T-DB-06: atomic increment — no read-modify-write on balances.
+        // NOTE: 'adjustment' was dropped from this list (T-07) — no schema
+        // field exists by that name, and fieldFor() never resolves to it.
         const allowedFields = [
             'salesIncome', 'purchaseExpenses',
             'bankIncome', 'bankExpenses',
             'walletIncome', 'walletExpenses',
             'checkIncome', 'checkExpenses',
-            'instapayIncome', 'instapayExpenses',
-            'adjustment'
+            'instapayIncome', 'instapayExpenses'
         ];
 
         const incUpdate = {};
@@ -320,9 +414,50 @@ export const TreasuryService = {
         }
 
         if (Object.keys(incUpdate).length > 0) {
+            // FIN-CASHBOX-01 (T-03/M2): pipeline update applies the increments
+            // AND recomputes the derived rollups in the same atomic write.
+            // The old $inc bypassed pre('save'), leaving totalIncome /
+            // totalExpenses / netChange / closings stale until the next
+            // .save(). Formulas mirror CashboxDaily pre('save') — keep both
+            // in sync if either changes.
+            const nz = (f) => ({ $ifNull: [`$${f}`, 0] });
+            const applyStage = { $set: {} };
+            for (const [field, amount] of Object.entries(incUpdate)) {
+                applyStage.$set[field] = { $add: [nz(field), amount] };
+            }
+            const incomeExpr = { $add: [
+                ...CASHBOX_INCOME_BUCKETS.map(nz),
+                { $ifNull: [{ $sum: '$manualIncome.amount' }, 0] }
+            ] };
+            const expenseExpr = { $add: [
+                ...CASHBOX_EXPENSE_BUCKETS.map(nz),
+                { $ifNull: [{ $sum: '$manualExpenses.amount' }, 0] }
+            ] };
             cashbox = await CashboxDaily.findOneAndUpdate(
                 { _id: cashbox._id },
-                { $inc: incUpdate },
+                [
+                    applyStage,
+                    { $set: { totalIncome: incomeExpr, totalExpenses: expenseExpr } },
+                    { $set: {
+                        netChange: { $subtract: ['$totalIncome', '$totalExpenses'] },
+                        closingBankBalance: { $subtract: [
+                            { $add: [nz('openingBankBalance'), nz('bankIncome')] }, nz('bankExpenses')
+                        ] },
+                        closingWalletBalance: { $subtract: [
+                            { $add: [nz('openingWalletBalance'), nz('walletIncome')] }, nz('walletExpenses')
+                        ] },
+                        closingCheckBalance: { $subtract: [
+                            { $add: [nz('openingCheckBalance'), nz('checkIncome')] }, nz('checkExpenses')
+                        ] },
+                        closingInstapayBalance: { $subtract: [
+                            { $add: [nz('openingInstapayBalance'), nz('instapayIncome')] }, nz('instapayExpenses')
+                        ] },
+                        difference: { $subtract: [
+                            nz('closingBalance'),
+                            { $add: [nz('openingBalance'), '$netChange'] }
+                        ] }
+                    } }
+                ],
                 { new: true, session }
             );
         }
@@ -333,6 +468,14 @@ export const TreasuryService = {
      * Add manual income entry
      */
     async addManualIncome(date, amount, reason, userId, method = 'cash', session = null, sourceNumber = '') {
+        // FIN-ATOMIC-01 (T-04): standalone calls (routes) run in their own
+        // transaction; callers that already hold one pass their session and
+        // must NOT nest (withTransaction always opens a new session).
+        if (session) return this._addManualIncome(date, amount, reason, userId, method, session, sourceNumber);
+        return withTransaction((s) => this._addManualIncome(date, amount, reason, userId, method, s, sourceNumber));
+    },
+
+    async _addManualIncome(date, amount, reason, userId, method = 'cash', session = null, sourceNumber = '') {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -345,40 +488,47 @@ export const TreasuryService = {
 
             const created = await CashboxDaily.create([{
                 date: startOfDay,
-                openingBalance: previousDay?.closingBalance || 0
+                ...cashboxOpenings(previousDay)
             }], { session });
             cashbox = created[0];
         }
 
-        await cashbox.addIncome(amount, reason, userId, session);
+        // FIN-CASHBOX-01 (T-03): exactly ONE counting location. Channeled
+        // methods land in their method bucket (which feeds the totals);
+        // only cash/adjustment use manual[] (they have no bucket). The old
+        // code pushed manual[] AND $inc'd the bucket for non-cash methods,
+        // doubling totalIncome. The ledger row below keeps the full audit
+        // trail (description/createdBy/sourceNumber) either way.
+        if (method !== 'cash' && method !== 'adjustment') {
+            const updateField = fieldFor(method, 'INCOME');
+            cashbox = await this.updateDailyCashbox(date, { [updateField]: amount }, session);
+        } else {
+            await cashbox.addIncome(amount, reason, userId, session);
+        }
 
-        // Also record in treasury transactions
+        // Also record in treasury transactions. The ledger row carries the
+        // same business date as the cashbox day (not wall-clock now), so
+        // undo/lookups that derive the day from the transaction find it.
         await this._createTransactions([{
             type: 'INCOME',
             amount,
             description: reason,
             referenceType: 'Manual',
-            date: new Date(),
+            date: new Date(date),
             method,
             sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId
         }], session);
 
-        // If it's bank/wallet/check/instapay, we need to update the specific fields too
-        // (CashboxDaily.addIncome only increments manualIncome array in its own way?)
-        // Wait, I should check CashboxDaily.addIncome implementation.
-        if (method !== 'cash' && method !== 'adjustment') {
-            const updateField = fieldFor(method, 'INCOME');
-            await this.updateDailyCashbox(date, { [updateField]: amount }, session);
-        }
-
         return cashbox;
     },
-
-    /**
-     * Add manual expense entry
-     */
     async addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null, sourceNumber = '') {
+        // FIN-ATOMIC-01 (T-04): same conditional-wrap contract as addManualIncome.
+        if (session) return this._addManualExpense(date, amount, reason, category, userId, method, session, sourceNumber);
+        return withTransaction((s) => this._addManualExpense(date, amount, reason, category, userId, method, s, sourceNumber));
+    },
+
+    async _addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null, sourceNumber = '') {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -391,29 +541,34 @@ export const TreasuryService = {
 
             const created = await CashboxDaily.create([{
                 date: startOfDay,
-                openingBalance: previousDay?.closingBalance || 0
+                ...cashboxOpenings(previousDay)
             }], { session });
             cashbox = created[0];
         }
 
-        await cashbox.addExpense(amount, reason, category, userId, session);
+        // FIN-CASHBOX-01 (T-03): exactly ONE counting location — method
+        // bucket for channeled methods, manual[] for cash/adjustment only
+        // (same single-count rule as addManualIncome).
+        if (method !== 'cash' && method !== 'adjustment') {
+            const updateField = fieldFor(method, 'EXPENSE');
+            cashbox = await this.updateDailyCashbox(date, { [updateField]: amount }, session);
+        } else {
+            await cashbox.addExpense(amount, reason, category, userId, session);
+        }
 
-        // Also record in treasury transactions
+        // Also record in treasury transactions. Same business-date rule
+        // as _addManualIncome: the ledger row must land on the cashbox day
+        // so undo/lookups that derive the day from the transaction find it.
         await this._createTransactions([{
             type: 'EXPENSE',
             amount,
             description: reason,
             referenceType: 'Manual',
-            date: new Date(),
+            date: new Date(date),
             method,
             sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId
         }], session);
-
-        if (method !== 'cash' && method !== 'adjustment') {
-            const updateField = fieldFor(method, 'EXPENSE');
-            await this.updateDailyCashbox(date, { [updateField]: amount }, session);
-        }
 
         return cashbox;
     },
@@ -863,12 +1018,25 @@ export const TreasuryService = {
         return { granularity, buckets };
     },
 
+    async undoTransaction(transactionId, userId, session = null) {
+        // FIN-ATOMIC-01 (T-04): standalone undo (routes) is atomic; nested
+        // callers pass their session.
+        if (session) return this._undoTransaction(transactionId, userId, session);
+        return withTransaction((s) => this._undoTransaction(transactionId, userId, s));
+    },
+
     /**
      * Undo/Reverse a manual transaction
      */
-    async undoTransaction(transactionId, userId, session = null) {
+    async _undoTransaction(transactionId, userId, session = null) {
         const transaction = await TreasuryTransaction.findById(transactionId).session(session);
         if (!transaction) throw new NotFoundError('المعاملة غير موجودة');
+
+        // FIN-GLREV-01 (T-06): a single leg must not strand P&L-moving GL
+        // entries. Document-linked profit legs are refused — cancel the
+        // source document instead (deleteTransactionByRef compensates
+        // automatically). Manual legs mirror their exact GL twin, if any.
+        await this._guardOrCompensateGL(transaction, userId, session);
 
         // Allow reversing Invoice/PurchaseOrder/Manual
         // if (transaction.referenceType !== 'Manual') {
@@ -881,43 +1049,9 @@ export const TreasuryService = {
 
         const cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
         if (cashbox) {
-            if (transaction.type === 'INCOME') {
-                // Find and remove from manualIncome
-                const index = cashbox.manualIncome.findIndex(mi =>
-                    mi.amount === transaction.amount &&
-                    mi.reason === transaction.description
-                );
-                if (index > -1) {
-                    cashbox.manualIncome.splice(index, 1);
-                } else {
-                    // If not in manualIncome, it might be in salesIncome accumulator
-                    // We should decrease salesIncome if it was a Sale
-                    if (transaction.referenceType === 'Invoice') {
-                        cashbox.salesIncome -= transaction.amount;
-                    }
-                }
-            } else {
-                // Find and remove from manualExpenses
-                const index = cashbox.manualExpenses.findIndex(me =>
-                    me.amount === transaction.amount &&
-                    me.reason === transaction.description
-                );
-                if (index > -1) {
-                    cashbox.manualExpenses.splice(index, 1);
-                } else {
-                    // Purchase Expenses accumulator
-                    if (transaction.referenceType === 'PurchaseOrder') {
-                        cashbox.purchaseExpenses -= transaction.amount;
-                    }
-                }
-            }
-
-            // Sync method fields
-            if (transaction.method !== 'cash') {
-                const methodField = fieldFor(transaction.method, transaction.type);
-                cashbox[methodField] -= transaction.amount;
-            }
-
+            // FIN-UNDO-01 (T-05): exact-inverse reversal (no cash-accumulator
+            // assumption, no unguarded decrements).
+            reverseCashboxFor(transaction, cashbox);
             await cashbox.save({ session });
         }
 
@@ -928,9 +1062,67 @@ export const TreasuryService = {
     },
 
     /**
+     * FIN-GLREV-01 (T-06): GL companion policy for single-leg undo.
+     */
+    async _guardOrCompensateGL(tx, userId, session = null) {
+        const { default: AccountingEntry } = await import('../models/AccountingEntry.js');
+        const PNL_GL_TYPES = ['SALE', 'COGS', 'EXPENSE', 'INCOME', 'RETURN', 'RETURN_COGS'];
+        if (tx.referenceType !== 'Manual') {
+            if (!tx.referenceId) return;
+            const linked = await AccountingEntry.exists({
+                refType: tx.referenceType,
+                refId: tx.referenceId,
+                type: { $in: PNL_GL_TYPES },
+            }).session(session);
+            if (linked) {
+                throw new ConflictError(
+                    'لا يمكن التراجع عن هذه المعاملة منفردة: لها قيود أرباح مرتبطة — ألغِ المستند المصدر (الفاتورة/المرتجع) ليتم عكس القيود تلقائيًا'
+                );
+            }
+            return;
+        }
+        // Manual leg: mirror the exact GL twin (finance-expense / GL-income
+        // dual write), matched by amount+description+day. Zero twins → pure
+        // treasury undo. Multiple unmirrored twins → refuse (ambiguous).
+        const glType = tx.type === 'INCOME' ? 'INCOME' : 'EXPENSE';
+        const dayStart = new Date(tx.date);
+        dayStart.setHours(0, 0, 0, 0);
+        const nextDay = new Date(dayStart);
+        nextDay.setDate(nextDay.getDate() + 1);
+        const twins = await AccountingEntry.find({
+            refType: 'Manual',
+            type: glType,
+            amount: tx.amount,
+            description: tx.description,
+            date: { $gte: dayStart, $lt: nextDay },
+        }).session(session).lean();
+        if (twins.length === 0) return;
+        const fresh = [];
+        for (const twin of twins) {
+            const mirrored = await AccountingEntry.exists({
+                type: 'REVERSAL',
+                refType: 'Manual',
+                description: `تراجع: ${twin.description}`,
+                amount: twin.amount,
+                date: { $gte: dayStart, $lt: nextDay },
+            }).session(session);
+            if (!mirrored) fresh.push(twin);
+        }
+        if (fresh.length > 1) {
+            throw new ConflictError('تعذر التراجع: قيود يدوية متعددة مطابقة — راجع السجلات قبل الحذف');
+        }
+        if (fresh.length === 1) {
+            const { AccountingService } = await import('./accountingService.js');
+            await AccountingService.createReversalEntries(
+                'Manual', fresh[0].refId, userId, session, [fresh[0]._id]
+            );
+        }
+    },
+
+    /**
      * Delete transaction by Reference (e.g. when deleting a whole Invoice)
      */
-    async deleteTransactionByRef(refType, refId, session = null) {
+    async deleteTransactionByRef(refType, refId, session = null, userId = null) {
         const transactions = await TreasuryTransaction.find({ referenceType: refType, referenceId: refId }).session(session);
         if (transactions.length === 0) return;
 
@@ -951,28 +1143,8 @@ export const TreasuryService = {
             if (!cashbox) continue;
 
             for (const transaction of txs) {
-                if (transaction.type === 'INCOME') {
-                    // Check manual first
-                    const mIdx = cashbox.manualIncome.findIndex(x => x.amount === transaction.amount && x.reason === transaction.description);
-                    if (mIdx > -1) {
-                        cashbox.manualIncome.splice(mIdx, 1);
-                    } else if (cashbox.salesIncome >= transaction.amount) {
-                        cashbox.salesIncome -= transaction.amount;
-                    }
-                } else if (transaction.type === 'EXPENSE') {
-                    const mIdx = cashbox.manualExpenses.findIndex(x => x.amount === transaction.amount && x.reason === transaction.description);
-                    if (mIdx > -1) {
-                        cashbox.manualExpenses.splice(mIdx, 1);
-                    } else if (cashbox.purchaseExpenses >= transaction.amount) {
-                        cashbox.purchaseExpenses -= transaction.amount;
-                    }
-                }
-
-                // Sync method fields
-                if (transaction.method !== 'cash') {
-                    const methodField = fieldFor(transaction.method, transaction.type);
-                    cashbox[methodField] -= transaction.amount;
-                }
+                // FIN-UNDO-01 (T-05): same exact-inverse rule as undoTransaction.
+                reverseCashboxFor(transaction, cashbox);
             }
 
             await cashbox.save({ session });
@@ -986,6 +1158,12 @@ export const TreasuryService = {
             (sum, t) => sum + (t.type === 'INCOME' ? -t.amount : t.amount), 0
         );
         await this._applyBalanceDelta(netDelta, session);
+
+        // FIN-GLREV-01 (T-06): the business object is gone (e.g. invoice
+        // cancelled) — its GL entries must not survive as phantom profit.
+        // deleteTransactionByRef is only called with a concrete ref pair.
+        const { AccountingService } = await import('./accountingService.js');
+        await AccountingService.createReversalEntries(refType, refId, userId, session);
     },
 
     /**

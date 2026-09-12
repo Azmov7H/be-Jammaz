@@ -24,7 +24,11 @@ const AccountingEntrySchema = new mongoose.Schema({
             'INCOME',
             'TRANSFER',
             'RETURN',
-            'RETURN_COGS'
+            'RETURN_COGS',
+            // FIN-GLREV-01 (T-06): compensating mirror of a linked entry,
+            // written when its business object is cancelled/undone. Swapped
+            // accounts + positive amount keep every P&L query net-neutral.
+            'REVERSAL'
         ],
         required: true
     },
