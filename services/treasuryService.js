@@ -7,6 +7,7 @@ import InvoiceSettings from '../models/InvoiceSettings.js';
 
 import Debt from '../models/Debt.js';
 import { NotFoundError, BadRequestError } from '../lib/errors.js';
+import { withTransaction } from '../utils/dbUtils.js';
 
 // Sprint 2 (FIN-SVC-001): canonical method -> CashboxDaily field mapping.
 // Replaces the scattered inline ternaries everywhere so instapay (and any
@@ -384,6 +385,14 @@ export const TreasuryService = {
      * Add manual income entry
      */
     async addManualIncome(date, amount, reason, userId, method = 'cash', session = null, sourceNumber = '') {
+        // FIN-ATOMIC-01 (T-04): standalone calls (routes) run in their own
+        // transaction; callers that already hold one pass their session and
+        // must NOT nest (withTransaction always opens a new session).
+        if (session) return this._addManualIncome(date, amount, reason, userId, method, session, sourceNumber);
+        return withTransaction((s) => this._addManualIncome(date, amount, reason, userId, method, s, sourceNumber));
+    },
+
+    async _addManualIncome(date, amount, reason, userId, method = 'cash', session = null, sourceNumber = '') {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -414,13 +423,15 @@ export const TreasuryService = {
             await cashbox.addIncome(amount, reason, userId, session);
         }
 
-        // Also record in treasury transactions
+        // Also record in treasury transactions. The ledger row carries the
+        // same business date as the cashbox day (not wall-clock now), so
+        // undo/lookups that derive the day from the transaction find it.
         await this._createTransactions([{
             type: 'INCOME',
             amount,
             description: reason,
             referenceType: 'Manual',
-            date: new Date(),
+            date: new Date(date),
             method,
             sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId
@@ -429,6 +440,12 @@ export const TreasuryService = {
         return cashbox;
     },
     async addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null, sourceNumber = '') {
+        // FIN-ATOMIC-01 (T-04): same conditional-wrap contract as addManualIncome.
+        if (session) return this._addManualExpense(date, amount, reason, category, userId, method, session, sourceNumber);
+        return withTransaction((s) => this._addManualExpense(date, amount, reason, category, userId, method, s, sourceNumber));
+    },
+
+    async _addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null, sourceNumber = '') {
         const startOfDay = new Date(date);
         startOfDay.setHours(0, 0, 0, 0);
 
@@ -456,13 +473,15 @@ export const TreasuryService = {
             await cashbox.addExpense(amount, reason, category, userId, session);
         }
 
-        // Also record in treasury transactions
+        // Also record in treasury transactions. Same business-date rule
+        // as _addManualIncome: the ledger row must land on the cashbox day
+        // so undo/lookups that derive the day from the transaction find it.
         await this._createTransactions([{
             type: 'EXPENSE',
             amount,
             description: reason,
             referenceType: 'Manual',
-            date: new Date(),
+            date: new Date(date),
             method,
             sourceNumber: sourceNumber || undefined, // FIN-SVC-002 (Sprint 3)
             createdBy: userId
@@ -916,10 +935,17 @@ export const TreasuryService = {
         return { granularity, buckets };
     },
 
+    async undoTransaction(transactionId, userId, session = null) {
+        // FIN-ATOMIC-01 (T-04): standalone undo (routes) is atomic; nested
+        // callers pass their session.
+        if (session) return this._undoTransaction(transactionId, userId, session);
+        return withTransaction((s) => this._undoTransaction(transactionId, userId, s));
+    },
+
     /**
      * Undo/Reverse a manual transaction
      */
-    async undoTransaction(transactionId, userId, session = null) {
+    async _undoTransaction(transactionId, userId, session = null) {
         const transaction = await TreasuryTransaction.findById(transactionId).session(session);
         if (!transaction) throw new NotFoundError('المعاملة غير موجودة');
 
