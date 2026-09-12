@@ -641,7 +641,9 @@ export const TreasuryService = {
      * transactions and moves the running balance in the same session.
      */
     async _createTransactions(docs, session = null) {
-        const created = await TreasuryTransaction.create(docs, { session });
+        // NOTE: multi-doc create() with a session requires explicit ordered
+        // (Mongoose 8) — single-doc callers never hit this; paired transfers do.
+        const created = await TreasuryTransaction.create(docs, { session, ordered: true });
         const delta = docs.reduce(
             (sum, d) => sum + (d.type === 'INCOME' ? d.amount : -d.amount), 0
         );
@@ -742,6 +744,25 @@ export const TreasuryService = {
             { upsert: true }
         );
         return balance;
+    },
+
+    /**
+     * FIN-TAHWEESH-02 (T-10): lifetime net for one funding channel — the
+     * "available" figure for set-aside deposits. Same semantics as the
+     * getSummary breakdown bucket (all history, no date filter).
+     */
+    async getMethodNet(method) {
+        const rows = await TreasuryTransaction.aggregate([
+            { $match: { method } },
+            {
+                $group: {
+                    _id: null,
+                    income: { $sum: { $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0] } },
+                    expense: { $sum: { $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0] } }
+                }
+            }
+        ]);
+        return (rows[0]?.income || 0) - (rows[0]?.expense || 0);
     },
 
     /**
