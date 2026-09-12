@@ -28,6 +28,7 @@ import pricingRoutes from './routes/pricingRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import partyRoutes from './routes/partyRoutes.js';
 import exportRoutes from './routes/exportRoutes.js';
+import tahweeshRoutes from './routes/tahweeshRoutes.js';
 import documentRoutes from './routes/documentRoutes.js';
 import aliasRoutes from './routes/aliasRoutes.js';
 import rateLimit from 'express-rate-limit';
@@ -188,6 +189,7 @@ app.use('/api/pricing', pricingRoutes);
 app.use('/api/docs', docsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/parties', partyRoutes);
+app.use('/api/tahweesh', tahweeshRoutes);
 app.use('/api/export', heavyLimiter, exportRoutes);
 // DOC-ENG-004: document engine — read-only financial document surface.
 // heavyLimiter applies: every document generation hits the DB at minimum,

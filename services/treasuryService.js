@@ -1,5 +1,6 @@
 import TreasuryTransaction from '../models/TreasuryTransaction.js';
 import TreasuryBalance from '../models/TreasuryBalance.js';
+import TahweeshBalance from '../models/TahweeshBalance.js';
 import { boundedRange, endOfDayIfDateOnly, MAX_LIMIT } from '../lib/paginate.js';
 import CashboxDaily from '../models/CashboxDaily.js';
 import Invoice from '../models/Invoice.js';
@@ -55,12 +56,37 @@ export function cashboxOpenings(previousDay) {
 }
 
 /**
+ * FIN-CASHBOX-03 (T-11): find-or-create the day doc with a full opening
+ * carry. Shared by updateDailyCashbox and the manual add-* cores so a
+ * fourth copy of the chain logic never appears.
+ * @returns {{ cashbox, created }}
+ */
+export async function ensureCashboxDay(date, session = null) {
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    let cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
+    if (cashbox) return { cashbox, created: false };
+    const yesterday = new Date(startOfDay);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const previousDay = await CashboxDaily.findOne({ date: yesterday }).session(session);
+    const created = await CashboxDaily.create([{
+        date: startOfDay,
+        ...cashboxOpenings(previousDay)
+    }], { session });
+    return { cashbox: created[0], created: true };
+}
+
+/**
  * Resolve the CashboxDaily aggregate field for a (method, type) pair.
  * @param {string} method payment method (cash/bank/wallet/check/instapay/...)
  * @param {'INCOME'|'EXPENSE'} type transaction direction
- * @returns {string} the numeric CashboxDaily field to increment/decrement
+ * @returns {string|null} the numeric CashboxDaily field, or null for the
+ *   set-aside channel — tahweesh legs live in TahweeshBalance and must
+ *   never touch day buckets. updateDailyCashbox skips unknown keys, so
+ *   passing the null through is safe.
  */
 export function fieldFor(method, type) {
+    if (method === 'tahweesh') return null;
     const map = type === 'INCOME' ? METHOD_INCOME_FIELD : METHOD_EXPENSE_FIELD;
     return map[method] || map.cash;
 }
@@ -111,6 +137,10 @@ export function maskSource(sourceNumber) {
  */
 export function reverseCashboxFor(tx, cashbox) {
     const method = tx.method || 'cash';
+    // Set-aside legs never touched day buckets (no legacy rows exist for
+    // the channel) — nothing to reverse here. TahweeshBalance itself is
+    // reversed in _deleteTransaction.
+    if (method === 'tahweesh') return;
     const isCashLike = method === 'cash' || method === 'adjustment';
 
     const spliceManual = (list) => {
@@ -370,32 +400,9 @@ export const TreasuryService = {
      * Update daily cashbox summary
      */
     async updateDailyCashbox(date, updates, session = null) {
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-
-        // Find or create daily cashbox record
-        let cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
-
-        if (!cashbox) {
-            // Get previous day's closing balances
-            const yesterday = new Date(startOfDay);
-            yesterday.setDate(yesterday.getDate() - 1);
-            const previousDay = await CashboxDaily.findOne({ date: yesterday }).session(session);
-
-            const created = await CashboxDaily.create([{
-                date: startOfDay,
-                ...cashboxOpenings(previousDay),
-                salesIncome: 0,
-                purchaseExpenses: 0,
-                bankIncome: 0,
-                bankExpenses: 0,
-                walletIncome: 0,
-                walletExpenses: 0,
-                checkIncome: 0,
-                checkExpenses: 0
-            }], { session });
-            cashbox = created[0];
-        }
+        // Find or create daily cashbox record (full opening carry).
+        const { cashbox: found } = await ensureCashboxDay(date, session);
+        let cashbox = found;
 
         // T-DB-06: atomic increment — no read-modify-write on balances.
         // NOTE: 'adjustment' was dropped from this list (T-07) — no schema
@@ -476,22 +483,7 @@ export const TreasuryService = {
     },
 
     async _addManualIncome(date, amount, reason, userId, method = 'cash', session = null, sourceNumber = '') {
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-
-        let cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
-
-        if (!cashbox) {
-            const yesterday = new Date(startOfDay);
-            yesterday.setDate(yesterday.getDate() - 1);
-            const previousDay = await CashboxDaily.findOne({ date: yesterday }).session(session);
-
-            const created = await CashboxDaily.create([{
-                date: startOfDay,
-                ...cashboxOpenings(previousDay)
-            }], { session });
-            cashbox = created[0];
-        }
+        let { cashbox } = await ensureCashboxDay(date, session);
 
         // FIN-CASHBOX-01 (T-03): exactly ONE counting location. Channeled
         // methods land in their method bucket (which feeds the totals);
@@ -529,22 +521,7 @@ export const TreasuryService = {
     },
 
     async _addManualExpense(date, amount, reason, category, userId, method = 'cash', session = null, sourceNumber = '') {
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-
-        let cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
-
-        if (!cashbox) {
-            const yesterday = new Date(startOfDay);
-            yesterday.setDate(yesterday.getDate() - 1);
-            const previousDay = await CashboxDaily.findOne({ date: yesterday }).session(session);
-
-            const created = await CashboxDaily.create([{
-                date: startOfDay,
-                ...cashboxOpenings(previousDay)
-            }], { session });
-            cashbox = created[0];
-        }
+        let { cashbox } = await ensureCashboxDay(date, session);
 
         // FIN-CASHBOX-01 (T-03): exactly ONE counting location — method
         // bucket for channeled methods, manual[] for cash/adjustment only
@@ -641,11 +618,37 @@ export const TreasuryService = {
      * transactions and moves the running balance in the same session.
      */
     async _createTransactions(docs, session = null) {
-        const created = await TreasuryTransaction.create(docs, { session });
+        // NOTE: multi-doc create() with a session requires explicit ordered
+        // (Mongoose 8) — single-doc callers never hit this; paired transfers do.
+        const created = await TreasuryTransaction.create(docs, { session, ordered: true });
         const delta = docs.reduce(
             (sum, d) => sum + (d.type === 'INCOME' ? d.amount : -d.amount), 0
         );
         await this._applyBalanceDelta(delta, session);
+        // FIN-TAHWEESH-03 (T-11): set-aside legs move TahweeshBalance in the
+        // same write — the single choke point, so every spend path (debt,
+        // supplier, expense, purchase) is covered without touching each one.
+        // Outflows are $gte-guarded: concurrent overspends fail here with a
+        // clear 400 instead of driving the set-aside negative.
+        for (const d of docs) {
+            if (d.method !== 'tahweesh') continue;
+            if (d.type === 'INCOME') {
+                await TahweeshBalance.findOneAndUpdate(
+                    { _id: TahweeshBalance.DOC_ID },
+                    { $inc: { balance: d.amount }, $set: { updatedAt: new Date() } },
+                    { upsert: true, session }
+                );
+            } else {
+                const moved = await TahweeshBalance.findOneAndUpdate(
+                    { _id: TahweeshBalance.DOC_ID, balance: { $gte: d.amount } },
+                    { $inc: { balance: -d.amount }, $set: { updatedAt: new Date() } },
+                    { session }
+                );
+                if (!moved) {
+                    throw new BadRequestError('المبلغ يتجاوز رصيد التحويش المتاح');
+                }
+            }
+        }
         return created;
     },
 
@@ -656,6 +659,27 @@ export const TreasuryService = {
         await transaction.deleteOne({ session });
         const delta = transaction.type === 'INCOME' ? -transaction.amount : transaction.amount;
         await this._applyBalanceDelta(delta, session);
+        // FIN-TAHWEESH-03 (T-11): mirror of the hook above — undoing a
+        // set-aside spend restores the set-aside (runs inside the undo txn,
+        // so a guard failure rolls the delete back too).
+        if (transaction.method === 'tahweesh') {
+            if (transaction.type === 'INCOME') {
+                const restored = await TahweeshBalance.findOneAndUpdate(
+                    { _id: TahweeshBalance.DOC_ID, balance: { $gte: transaction.amount } },
+                    { $inc: { balance: -transaction.amount }, $set: { updatedAt: new Date() } },
+                    { session }
+                );
+                if (!restored) {
+                    throw new BadRequestError('تعذر التراجع: رصيد التحويش الحالي أقل من مبلغ المعاملة');
+                }
+            } else {
+                await TahweeshBalance.findOneAndUpdate(
+                    { _id: TahweeshBalance.DOC_ID },
+                    { $inc: { balance: transaction.amount }, $set: { updatedAt: new Date() } },
+                    { upsert: true, session }
+                );
+            }
+        }
     },
 
     /**
@@ -699,6 +723,66 @@ export const TreasuryService = {
             { upsert: true }
         );
         return balance;
+    },
+
+    /**
+     * FIN-TAHWEESH-01 (T-09): read the set-aside balance, rebuilding from
+     * the ledger when the doc is missing.
+     */
+    async getTahweeshBalance() {
+        const doc = await TahweeshBalance.findById(TahweeshBalance.DOC_ID).lean();
+        if (doc && typeof doc.balance === 'number') return doc.balance;
+        return this.rebuildTahweeshBalance();
+    },
+
+    /**
+     * FIN-TAHWEESH-01 (T-09): recompute the set-aside balance from paired
+     * legs (INCOME minus EXPENSE over method:'tahweesh') and upsert it.
+     * Used on first run and as the drift detector in invariant tests.
+     */
+    async rebuildTahweeshBalance() {
+        const result = await TreasuryTransaction.aggregate([
+            { $match: { method: 'tahweesh' } },
+            {
+                $group: {
+                    _id: null,
+                    totalIn: {
+                        $sum: { $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0] }
+                    },
+                    totalOut: {
+                        $sum: { $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0] }
+                    }
+                }
+            }
+        ]);
+        const balance = (!result || result.length === 0)
+            ? 0
+            : (result[0].totalIn || 0) - (result[0].totalOut || 0);
+        await TahweeshBalance.findOneAndUpdate(
+            { _id: TahweeshBalance.DOC_ID },
+            [{ $set: { balance, updatedAt: '$$NOW' } }],
+            { upsert: true }
+        );
+        return balance;
+    },
+
+    /**
+     * FIN-TAHWEESH-02 (T-10): lifetime net for one funding channel — the
+     * "available" figure for set-aside deposits. Same semantics as the
+     * getSummary breakdown bucket (all history, no date filter).
+     */
+    async getMethodNet(method) {
+        const rows = await TreasuryTransaction.aggregate([
+            { $match: { method } },
+            {
+                $group: {
+                    _id: null,
+                    income: { $sum: { $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0] } },
+                    expense: { $sum: { $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0] } }
+                }
+            }
+        ]);
+        return (rows[0]?.income || 0) - (rows[0]?.expense || 0);
     },
 
     /**
@@ -846,8 +930,13 @@ export const TreasuryService = {
 
         // T-PERF-01: aggregate in DB — getTransactions is now page-capped,
         // so summaries must never depend on it.
+        // FIN-TAHWEESH-01 (T-09): TahweeshTransfer legs are relocation, not
+        // business flow — excluded from period income/expense (they net to
+        // zero globally but would inflate gross volume and fake a deficit in
+        // periodBalance when only one leg falls in-window).
+        const transferExclusion = { referenceType: { $ne: 'TahweeshTransfer' } };
         const totalsAgg = await TreasuryTransaction.aggregate([
-            { $match: { date: { $gte: periodStart, $lte: periodEnd } } },
+            { $match: { date: { $gte: periodStart, $lte: periodEnd }, ...transferExclusion } },
             { $group: { _id: '$type', total: { $sum: '$amount' } } }
         ]);
         const totals = { income: 0, expense: 0 };
@@ -863,7 +952,7 @@ export const TreasuryService = {
         //   supplier payments = EXPENSE on a PurchaseOrder or a Supplier Debt
         //   shop expenses     = EXPENSE on a Manual entry or SalesReturn
         const categoryAgg = await TreasuryTransaction.aggregate([
-            { $match: { date: { $gte: periodStart, $lte: periodEnd }, type: 'EXPENSE' } },
+            { $match: { date: { $gte: periodStart, $lte: periodEnd }, type: 'EXPENSE', ...transferExclusion } },
             { $lookup: { from: 'debts', localField: 'referenceId', foreignField: '_id', as: '_debt' } },
             {
                 $group: {
@@ -925,8 +1014,10 @@ export const TreasuryService = {
             }
         ]);
 
-        // Initialize breakdown (instapay added in Sprint 2 — FIN-SVC-001)
-        const breakdown = { cash: 0, bank: 0, wallet: 0, check: 0, instapay: 0 };
+        // Initialize breakdown (instapay added in Sprint 2 — FIN-SVC-001;
+        // tahweesh in T-09 — it MUST have its own bucket, otherwise the cash
+        // fallback below absorbs set-aside money into operating cash).
+        const breakdown = { cash: 0, bank: 0, wallet: 0, check: 0, instapay: 0, tahweesh: 0 };
 
         // Populate breakdown from aggregation
         for (const item of breakdownAgg) {
@@ -940,6 +1031,8 @@ export const TreasuryService = {
                 breakdown.check = net;
             } else if (method === 'instapay') {
                 breakdown.instapay = net;
+            } else if (method === 'tahweesh') {
+                breakdown.tahweesh = net;
             } else {
                 breakdown.cash += net; // cash or null/undefined
             }
@@ -961,6 +1054,7 @@ export const TreasuryService = {
         return {
             balance: currentBalance,
             breakdown,
+            tahweesh: breakdown.tahweesh,
             periodBalance: totals.income - totals.expense,
             totalIncome: totals.income,
             totalExpense: totals.expense,
@@ -987,7 +1081,8 @@ export const TreasuryService = {
         const granularity = spanDays > 60 ? 'month' : 'day';
 
         const buckets = await TreasuryTransaction.aggregate([
-            { $match: { date: { $gte: range.startDate, $lte: range.endDate } } },
+            // FIN-TAHWEESH-01 (T-09): internal relocations are not cash flow.
+            { $match: { date: { $gte: range.startDate, $lte: range.endDate }, referenceType: { $ne: 'TahweeshTransfer' } } },
             {
                 $group: {
                     _id: {
@@ -1066,6 +1161,14 @@ export const TreasuryService = {
      */
     async _guardOrCompensateGL(tx, userId, session = null) {
         const { default: AccountingEntry } = await import('../models/AccountingEntry.js');
+        // FIN-TAHWEESH-03 (T-11): transfer pairs are atomic relocation —
+        // undoing one leg strands its twin and corrupts both pots. Reverse
+        // via the withdraw (return-to-cash) flow instead.
+        if (tx.referenceType === 'TahweeshTransfer') {
+            throw new ConflictError(
+                'لا يمكن التراجع عن طرف تحويل منفردًا — استخدم سحب التحويش لعكس التحويل'
+            );
+        }
         const PNL_GL_TYPES = ['SALE', 'COGS', 'EXPENSE', 'INCOME', 'RETURN', 'RETURN_COGS'];
         if (tx.referenceType !== 'Manual') {
             if (!tx.referenceId) return;

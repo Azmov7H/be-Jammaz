@@ -23,7 +23,11 @@ export const paginationSchema = z.object({
     search: z.string().max(200).optional(),
 });
 
-const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay']).optional();
+const paymentMethod = z.enum(['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay',
+    // FIN-TAHWEESH-03 (T-11): set-aside as a funding channel on spend paths.
+    // Input-only removal of 'bank' (T-08) is a frontend concern; the backend
+    // enum keeps history readable.
+    'tahweesh']).optional();
 
 // Shared transfer-source schema (SEC-VAL-001). Hardened beyond Zod: trimmed,
 // length-bounded (max 200), and rejects control characters + path separators
@@ -66,6 +70,36 @@ export function sourceRequired(method) {
 export function sourceMissing(method, sourceNumber) {
     return sourceRequired(method) && !(sourceNumber != null && String(sourceNumber).trim() !== '');
 }
+
+// ---------------------------------------------------------------------------
+// Tahweesh (set-aside) transfers — FIN-TAHWEESH-02/03 (T-10/T-11).
+// Deposits may only come from operating channels (bank is excluded: the
+// banking input flow is removed). sourceNumber follows the same
+// instapay/wallet rule as every other new movement (FIN-VAL-002).
+// ---------------------------------------------------------------------------
+export const tahweeshSourceSchema = z.enum(['cash', 'instapay', 'wallet']);
+
+export const tahweeshTransferSchema = z.object({
+    source: tahweeshSourceSchema,
+    amount: positiveMoney,
+    note: z.string().max(500).optional(),
+    transferId: z.string().uuid('معرف التحويل غير صالح'),
+    sourceNumber: sourceNumberSchema,
+}).superRefine((data, ctx) => {
+    if (sourceMissing(data.source, data.sourceNumber)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['sourceNumber'],
+            message: SOURCE_REQUIRED_MSG,
+        });
+    }
+});
+
+export const tahweeshWithdrawSchema = z.object({
+    amount: positiveMoney,
+    note: z.string().max(500).optional(),
+    transferId: z.string().uuid('معرف التحويل غير صالح'),
+});
 
 /**
  * Zod `superRefine` that rejects a payload when `method` ∈ {instapay, wallet}

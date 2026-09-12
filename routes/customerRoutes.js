@@ -12,7 +12,7 @@ const router = express.Router();
 const idParams = z.object({ id: idSchema });
 const payBody = sourceRequiredRefine(z.object({
     amount: z.coerce.number().positive().max(1e9),
-    method: z.enum(['cash', 'bank', 'wallet', 'check', 'instapay']).optional(),
+    method: z.enum(['cash', 'bank', 'wallet', 'check', 'instapay', 'tahweesh']).optional(),
     sourceNumber: sourceNumberSchema,
     note: z.string().max(500).optional(),
 }));
