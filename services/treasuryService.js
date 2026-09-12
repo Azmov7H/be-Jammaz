@@ -702,6 +702,49 @@ export const TreasuryService = {
     },
 
     /**
+     * FIN-TAHWEESH-01 (T-09): read the set-aside balance, rebuilding from
+     * the ledger when the doc is missing.
+     */
+    async getTahweeshBalance() {
+        const { default: TahweeshBalance } = await import('../models/TahweeshBalance.js');
+        const doc = await TahweeshBalance.findById(TahweeshBalance.DOC_ID).lean();
+        if (doc && typeof doc.balance === 'number') return doc.balance;
+        return this.rebuildTahweeshBalance();
+    },
+
+    /**
+     * FIN-TAHWEESH-01 (T-09): recompute the set-aside balance from paired
+     * legs (INCOME minus EXPENSE over method:'tahweesh') and upsert it.
+     * Used on first run and as the drift detector in invariant tests.
+     */
+    async rebuildTahweeshBalance() {
+        const { default: TahweeshBalance } = await import('../models/TahweeshBalance.js');
+        const result = await TreasuryTransaction.aggregate([
+            { $match: { method: 'tahweesh' } },
+            {
+                $group: {
+                    _id: null,
+                    totalIn: {
+                        $sum: { $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0] }
+                    },
+                    totalOut: {
+                        $sum: { $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0] }
+                    }
+                }
+            }
+        ]);
+        const balance = (!result || result.length === 0)
+            ? 0
+            : (result[0].totalIn || 0) - (result[0].totalOut || 0);
+        await TahweeshBalance.findOneAndUpdate(
+            { _id: TahweeshBalance.DOC_ID },
+            [{ $set: { balance, updatedAt: '$$NOW' } }],
+            { upsert: true }
+        );
+        return balance;
+    },
+
+    /**
      * Get cashbox for specific date
      */
     async getDailyCashbox(date) {
@@ -846,8 +889,13 @@ export const TreasuryService = {
 
         // T-PERF-01: aggregate in DB — getTransactions is now page-capped,
         // so summaries must never depend on it.
+        // FIN-TAHWEESH-01 (T-09): TahweeshTransfer legs are relocation, not
+        // business flow — excluded from period income/expense (they net to
+        // zero globally but would inflate gross volume and fake a deficit in
+        // periodBalance when only one leg falls in-window).
+        const transferExclusion = { referenceType: { $ne: 'TahweeshTransfer' } };
         const totalsAgg = await TreasuryTransaction.aggregate([
-            { $match: { date: { $gte: periodStart, $lte: periodEnd } } },
+            { $match: { date: { $gte: periodStart, $lte: periodEnd }, ...transferExclusion } },
             { $group: { _id: '$type', total: { $sum: '$amount' } } }
         ]);
         const totals = { income: 0, expense: 0 };
@@ -863,7 +911,7 @@ export const TreasuryService = {
         //   supplier payments = EXPENSE on a PurchaseOrder or a Supplier Debt
         //   shop expenses     = EXPENSE on a Manual entry or SalesReturn
         const categoryAgg = await TreasuryTransaction.aggregate([
-            { $match: { date: { $gte: periodStart, $lte: periodEnd }, type: 'EXPENSE' } },
+            { $match: { date: { $gte: periodStart, $lte: periodEnd }, type: 'EXPENSE', ...transferExclusion } },
             { $lookup: { from: 'debts', localField: 'referenceId', foreignField: '_id', as: '_debt' } },
             {
                 $group: {
@@ -925,8 +973,10 @@ export const TreasuryService = {
             }
         ]);
 
-        // Initialize breakdown (instapay added in Sprint 2 — FIN-SVC-001)
-        const breakdown = { cash: 0, bank: 0, wallet: 0, check: 0, instapay: 0 };
+        // Initialize breakdown (instapay added in Sprint 2 — FIN-SVC-001;
+        // tahweesh in T-09 — it MUST have its own bucket, otherwise the cash
+        // fallback below absorbs set-aside money into operating cash).
+        const breakdown = { cash: 0, bank: 0, wallet: 0, check: 0, instapay: 0, tahweesh: 0 };
 
         // Populate breakdown from aggregation
         for (const item of breakdownAgg) {
@@ -940,6 +990,8 @@ export const TreasuryService = {
                 breakdown.check = net;
             } else if (method === 'instapay') {
                 breakdown.instapay = net;
+            } else if (method === 'tahweesh') {
+                breakdown.tahweesh = net;
             } else {
                 breakdown.cash += net; // cash or null/undefined
             }
@@ -961,6 +1013,7 @@ export const TreasuryService = {
         return {
             balance: currentBalance,
             breakdown,
+            tahweesh: breakdown.tahweesh,
             periodBalance: totals.income - totals.expense,
             totalIncome: totals.income,
             totalExpense: totals.expense,
@@ -987,7 +1040,8 @@ export const TreasuryService = {
         const granularity = spanDays > 60 ? 'month' : 'day';
 
         const buckets = await TreasuryTransaction.aggregate([
-            { $match: { date: { $gte: range.startDate, $lte: range.endDate } } },
+            // FIN-TAHWEESH-01 (T-09): internal relocations are not cash flow.
+            { $match: { date: { $gte: range.startDate, $lte: range.endDate }, referenceType: { $ne: 'TahweeshTransfer' } } },
             {
                 $group: {
                     _id: {

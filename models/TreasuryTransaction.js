@@ -25,7 +25,11 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     },
     referenceType: {
         type: String,
-        enum: ['Invoice', 'PurchaseOrder', 'Manual', 'SalesReturn', 'Debt', 'UnifiedCollection'],
+        enum: ['Invoice', 'PurchaseOrder', 'Manual', 'SalesReturn', 'Debt', 'UnifiedCollection',
+            // FIN-TAHWEESH-01 (T-09): internal set-aside moves. Paired legs
+            // (source EXPENSE + tahweesh INCOME) sharing meta.transferId.
+            // Aggregations treat these as relocation, never revenue/expense.
+            'TahweeshTransfer'],
         default: 'Manual'
     },
     referenceId: {
@@ -43,7 +47,10 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     },
     method: {
         type: String,
-        enum: ['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay'],
+        enum: ['cash', 'bank', 'wallet', 'check', 'adjustment', 'instapay',
+            // FIN-TAHWEESH-01 (T-09): the set-aside account as a funding
+            // channel. getSummary maps it to breakdown.tahweesh (never cash).
+            'tahweesh'],
         default: 'cash'
     },
     // Transfer-source / reference number (e.g. InstaPay transaction ID).
@@ -71,6 +78,8 @@ const TreasuryTransactionSchema = new mongoose.Schema({
 TreasuryTransactionSchema.index({ type: 1, date: -1 });
 TreasuryTransactionSchema.index({ type: 1, referenceType: 1, date: -1 });
 TreasuryTransactionSchema.index({ date: -1 });
+// FIN-TAHWEESH-01 (T-09): set-aside balance reads aggregate by method.
+TreasuryTransactionSchema.index({ method: 1, date: -1 });
 
 export default mongoose.models.TreasuryTransaction || mongoose.model('TreasuryTransaction', TreasuryTransactionSchema);
 
