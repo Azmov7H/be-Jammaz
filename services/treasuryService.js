@@ -6,7 +6,7 @@ import Invoice from '../models/Invoice.js';
 import InvoiceSettings from '../models/InvoiceSettings.js';
 
 import Debt from '../models/Debt.js';
-import { NotFoundError, BadRequestError } from '../lib/errors.js';
+import { NotFoundError, BadRequestError, ConflictError } from '../lib/errors.js';
 import { withTransaction } from '../utils/dbUtils.js';
 
 // Sprint 2 (FIN-SVC-001): canonical method -> CashboxDaily field mapping.
@@ -1018,6 +1018,12 @@ export const TreasuryService = {
         const transaction = await TreasuryTransaction.findById(transactionId).session(session);
         if (!transaction) throw new NotFoundError('المعاملة غير موجودة');
 
+        // FIN-GLREV-01 (T-06): a single leg must not strand P&L-moving GL
+        // entries. Document-linked profit legs are refused — cancel the
+        // source document instead (deleteTransactionByRef compensates
+        // automatically). Manual legs mirror their exact GL twin, if any.
+        await this._guardOrCompensateGL(transaction, userId, session);
+
         // Allow reversing Invoice/PurchaseOrder/Manual
         // if (transaction.referenceType !== 'Manual') {
         //     throw new Error('يمكن التراجع عن المعاملات اليدوية فقط');
@@ -1042,9 +1048,67 @@ export const TreasuryService = {
     },
 
     /**
+     * FIN-GLREV-01 (T-06): GL companion policy for single-leg undo.
+     */
+    async _guardOrCompensateGL(tx, userId, session = null) {
+        const { default: AccountingEntry } = await import('../models/AccountingEntry.js');
+        const PNL_GL_TYPES = ['SALE', 'COGS', 'EXPENSE', 'INCOME', 'RETURN', 'RETURN_COGS'];
+        if (tx.referenceType !== 'Manual') {
+            if (!tx.referenceId) return;
+            const linked = await AccountingEntry.exists({
+                refType: tx.referenceType,
+                refId: tx.referenceId,
+                type: { $in: PNL_GL_TYPES },
+            }).session(session);
+            if (linked) {
+                throw new ConflictError(
+                    'لا يمكن التراجع عن هذه المعاملة منفردة: لها قيود أرباح مرتبطة — ألغِ المستند المصدر (الفاتورة/المرتجع) ليتم عكس القيود تلقائيًا'
+                );
+            }
+            return;
+        }
+        // Manual leg: mirror the exact GL twin (finance-expense / GL-income
+        // dual write), matched by amount+description+day. Zero twins → pure
+        // treasury undo. Multiple unmirrored twins → refuse (ambiguous).
+        const glType = tx.type === 'INCOME' ? 'INCOME' : 'EXPENSE';
+        const dayStart = new Date(tx.date);
+        dayStart.setHours(0, 0, 0, 0);
+        const nextDay = new Date(dayStart);
+        nextDay.setDate(nextDay.getDate() + 1);
+        const twins = await AccountingEntry.find({
+            refType: 'Manual',
+            type: glType,
+            amount: tx.amount,
+            description: tx.description,
+            date: { $gte: dayStart, $lt: nextDay },
+        }).session(session).lean();
+        if (twins.length === 0) return;
+        const fresh = [];
+        for (const twin of twins) {
+            const mirrored = await AccountingEntry.exists({
+                type: 'REVERSAL',
+                refType: 'Manual',
+                description: `تراجع: ${twin.description}`,
+                amount: twin.amount,
+                date: { $gte: dayStart, $lt: nextDay },
+            }).session(session);
+            if (!mirrored) fresh.push(twin);
+        }
+        if (fresh.length > 1) {
+            throw new ConflictError('تعذر التراجع: قيود يدوية متعددة مطابقة — راجع السجلات قبل الحذف');
+        }
+        if (fresh.length === 1) {
+            const { AccountingService } = await import('./accountingService.js');
+            await AccountingService.createReversalEntries(
+                'Manual', fresh[0].refId, userId, session, [fresh[0]._id]
+            );
+        }
+    },
+
+    /**
      * Delete transaction by Reference (e.g. when deleting a whole Invoice)
      */
-    async deleteTransactionByRef(refType, refId, session = null) {
+    async deleteTransactionByRef(refType, refId, session = null, userId = null) {
         const transactions = await TreasuryTransaction.find({ referenceType: refType, referenceId: refId }).session(session);
         if (transactions.length === 0) return;
 
@@ -1080,6 +1144,12 @@ export const TreasuryService = {
             (sum, t) => sum + (t.type === 'INCOME' ? -t.amount : t.amount), 0
         );
         await this._applyBalanceDelta(netDelta, session);
+
+        // FIN-GLREV-01 (T-06): the business object is gone (e.g. invoice
+        // cancelled) — its GL entries must not survive as phantom profit.
+        // deleteTransactionByRef is only called with a concrete ref pair.
+        const { AccountingService } = await import('./accountingService.js');
+        await AccountingService.createReversalEntries(refType, refId, userId, session);
     },
 
     /**

@@ -49,7 +49,7 @@ async function makeCustomer() {
 }
 
 describe('T-05: exact-inverse undo', () => {
-    it('bank sale undo reverses bankIncome only, never salesIncome', async () => {
+    it('bank sale cancel reverses bankIncome only, never salesIncome', async () => {
         const p = await makeProduct();
         const c = await makeCustomer();
         const inv = await auth(request.post('/api/invoices')).send({
@@ -61,18 +61,20 @@ describe('T-05: exact-inverse undo', () => {
         const tx = await T.findOne({ referenceType: 'Invoice', referenceId: id(inv.body.data), type: 'INCOME' }).lean();
         expect(tx).toBeTruthy();
         expect(tx.method).toBe('bank');
-        let cb = await dayBuckets(tx.date);
-        expect(cb.bankIncome).toBeCloseTo(100, 2);
-
-        const undo = await auth(request.delete(`/api/treasury/transactions/${tx._id}`));
-        ok(undo, 'undoBankSale');
-        cb = await dayBuckets(tx.date);
-        expect(cb.bankIncome).toBeCloseTo(0, 2);
+        const dayBefore = await dayBuckets(tx.date);
+        // Single-leg undo of a profit-linked leg is refused (T-06) — cancel
+        // the document instead; the shared helper reverses the buckets.
+        const refused = await auth(request.delete(`/api/treasury/transactions/${tx._id}`));
+        expect(refused.status).toBe(409);
+        const del = await auth(request.delete(`/api/invoices/${id(inv.body.data)}`));
+        ok(del, 'cancelBankInvoice');
+        const cb = await dayBuckets(tx.date);
+        expect((dayBefore.bankIncome || 0) - (cb.bankIncome || 0)).toBeCloseTo(100, 2);
         // Old code subtracted salesIncome here (never incremented) → negative.
         expect(cb.salesIncome || 0).toBeGreaterThanOrEqual(-0.01);
     });
 
-    it('cash sale undo restores salesIncome (regression)', async () => {
+    it('cash sale cancel restores salesIncome (regression)', async () => {
         const p = await makeProduct();
         const c = await makeCustomer();
         const inv = await auth(request.post('/api/invoices')).send({
@@ -83,8 +85,8 @@ describe('T-05: exact-inverse undo', () => {
         const T = await Txn();
         const tx = await T.findOne({ referenceType: 'Invoice', referenceId: id(inv.body.data), type: 'INCOME' }).lean();
         const before = await dayBuckets(tx.date);
-        const undo = await auth(request.delete(`/api/treasury/transactions/${tx._id}`));
-        ok(undo, 'undoCashSale');
+        const del = await auth(request.delete(`/api/invoices/${id(inv.body.data)}`));
+        ok(del, 'cancelCashInvoice');
         const after = await dayBuckets(tx.date);
         expect((before.salesIncome || 0) - (after.salesIncome || 0)).toBeCloseTo(40, 2);
     });
