@@ -80,6 +80,9 @@ TreasuryTransactionSchema.index({ type: 1, referenceType: 1, date: -1 });
 TreasuryTransactionSchema.index({ date: -1 });
 // FIN-TAHWEESH-01 (T-09): set-aside balance reads aggregate by method.
 TreasuryTransactionSchema.index({ method: 1, date: -1 });
+// FIN-RPT-01 (number report): per-number movement queries always scope by
+// method + date and group/filter on the trimmed sourceNumber.
+TreasuryTransactionSchema.index({ method: 1, sourceNumber: 1, date: -1 });
 
 export default mongoose.models.TreasuryTransaction || mongoose.model('TreasuryTransaction', TreasuryTransactionSchema);
 

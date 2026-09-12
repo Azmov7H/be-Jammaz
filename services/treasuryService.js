@@ -29,6 +29,14 @@ export const METHOD_EXPENSE_FIELD = {
     instapay: 'instapayExpenses',
 };
 
+// FIN-RPT-01: methods that support per-number movement reports, and the
+// sentinel key for ledger rows that carry no number (documented gap rows:
+// Tahweesh withdraw legs, credit-refund legs, non-cash sales-return
+// refunds, adjustment corrections, pre-validation history). The sentinel
+// is never written to the DB — it exists only in report output.
+export const NUMBER_REPORT_METHODS = ['wallet', 'instapay'];
+export const NUMBER_REPORT_UNASSIGNED = '__unassigned';
+
 // FIN-CASHBOX-01: bucket lists for the atomic rollup recompute in
 // updateDailyCashbox. Must stay identical to the sums in CashboxDaily
 // pre('save') — both encode the same derived totals.
@@ -819,7 +827,7 @@ export const TreasuryService = {
      * Returns `{ transactions, total, page, limit }`; `total` covers the
      * whole window so the UI never mistakes a page for the full ledger.
      */
-    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100, maxDays = 90, category = null } = {}) {
+    async getTransactions(startDate, endDate, type = null, partnerId = null, { page = 1, limit = 100, maxDays = 90, category = null, method = null, sourceNumber = null, referenceType = null } = {}) {
         // T-PERF-01: default 30d window, hard-capped. The cap is configurable
         // per-call (e.g. the dedicated history endpoint widens to 365 days).
         // Day-scoped callers (the dashboard sends YYYY-MM-DD) mean the whole
@@ -836,6 +844,28 @@ export const TreasuryService = {
         if (isSupplier || isShop) match.type = 'EXPENSE';
         if (isShop) match.referenceType = { $in: ['Manual', 'SalesReturn'] };
         if (isSupplier) match.$or = [{ referenceType: 'PurchaseOrder' }, { referenceType: 'Debt' }];
+        // FIN-RPT-01: number-report detail filters. `method` is a plain
+        // whitelist-checked equality. `referenceType` applies only when no
+        // dashboard `category` owns that field (supplier narrowing lives in
+        // the $lookup stages below and must not be disturbed).
+        if (method && method !== 'ALL') match.method = method;
+        if (referenceType && referenceType !== 'ALL' && !isSupplier && !isShop) {
+            match.referenceType = referenceType;
+        }
+        if (sourceNumber != null && String(sourceNumber).trim() !== '') {
+            const trimmed = String(sourceNumber).trim();
+            if (trimmed === NUMBER_REPORT_UNASSIGNED) {
+                match.$and = [...(match.$and || []), {
+                    $or: [
+                        { sourceNumber: { $exists: false } },
+                        { sourceNumber: null },
+                        { sourceNumber: '' },
+                    ],
+                }];
+            } else {
+                match.sourceNumber = trimmed;
+            }
+        }
 
         // T-PERF-01: bounded page size (default 100, max MAX_LIMIT).
         // The skip MUST derive from the same capped limit, not the
@@ -915,6 +945,80 @@ export const TreasuryService = {
         }
 
         return { transactions: docs, total, page: pageNum, limit: cappedLimit };
+    },
+
+    /**
+     * FIN-RPT-01: per-number movement report for wallet / instapay.
+     * READ-ONLY aggregation — INCOME rows count as received, EXPENSE rows
+     * as withdrawn, net = received − withdrawn. TahweeshTransfer legs are
+     * included as *movement* (a deposit source-leg reads as withdrawn from
+     * the number) but this path writes nothing, so profit/GL/balances are
+     * untouched. Detail rows come from getTransactions with the same
+     * filters; this method returns aggregates + grand totals only.
+     */
+    async getNumberReport({ method, numbers = [], startDate, endDate, direction = null, referenceType = null, maxDays = 365 } = {}) {
+        if (!NUMBER_REPORT_METHODS.includes(method)) {
+            throw new BadRequestError('تقرير الأرقام متاح للمحفظة وانستا باي فقط');
+        }
+        if (direction && !['ALL', 'INCOME', 'EXPENSE'].includes(direction)) {
+            throw new BadRequestError('direction must be one of ALL, INCOME, EXPENSE');
+        }
+        const range = boundedRange({ startDate, endDate: endOfDayIfDateOnly(endDate) }, { defaultDays: 30, maxDays });
+
+        const match = { method, date: { $gte: range.startDate, $lte: range.endDate } };
+        if (direction && direction !== 'ALL') match.type = direction;
+        if (referenceType && referenceType !== 'ALL') match.referenceType = referenceType;
+
+        const wanted = (Array.isArray(numbers) ? numbers : [numbers])
+            .map((n) => String(n ?? '').trim())
+            .filter((n) => n !== '');
+        const named = wanted.filter((n) => n !== NUMBER_REPORT_UNASSIGNED);
+        const wantsUnassigned = wanted.includes(NUMBER_REPORT_UNASSIGNED);
+        const numberExpr = [];
+        if (named.length) numberExpr.push({ $in: ['$_num', named] });
+        if (wantsUnassigned) numberExpr.push({ $eq: ['$_num', ''] });
+
+        const rows = await TreasuryTransaction.aggregate([
+            { $match: match },
+            // Normalize once: trim legacy whitespace so `010x` and `010x `
+            // never split one real number. Empty/missing → '' → sentinel.
+            { $addFields: { _num: { $trim: { input: { $ifNull: ['$sourceNumber', ''] } } } } },
+            ...(numberExpr.length ? [{ $match: { $expr: numberExpr.length > 1 ? { $or: numberExpr } : numberExpr[0] } }] : []),
+            {
+                $group: {
+                    _id: { $cond: [{ $eq: ['$_num', ''] }, NUMBER_REPORT_UNASSIGNED, '$_num'] },
+                    received: { $sum: { $cond: [{ $eq: ['$type', 'INCOME'] }, '$amount', 0] } },
+                    withdrawn: { $sum: { $cond: [{ $eq: ['$type', 'EXPENSE'] }, '$amount', 0] } },
+                    count: { $sum: 1 },
+                },
+            },
+            {
+                $project: {
+                    _id: 0,
+                    number: '$_id',
+                    received: 1,
+                    withdrawn: 1,
+                    count: 1,
+                    net: { $subtract: ['$received', '$withdrawn'] },
+                },
+            },
+            { $sort: { number: 1 } },
+        ]);
+
+        const totals = rows.reduce(
+            (acc, r) => ({
+                received: acc.received + r.received,
+                withdrawn: acc.withdrawn + r.withdrawn,
+                count: acc.count + r.count,
+            }),
+            { received: 0, withdrawn: 0, count: 0 }
+        );
+        return {
+            method,
+            period: { startDate: range.startDate, endDate: range.endDate },
+            numbers: rows,
+            totals: { ...totals, net: totals.received - totals.withdrawn },
+        };
     },
 
     /**

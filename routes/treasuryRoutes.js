@@ -1,6 +1,7 @@
 import express from 'express';
-import { TreasuryService } from '../services/treasuryService.js';
-import { maskSourceInResult } from '../lib/pii.js';
+import { TreasuryService, NUMBER_REPORT_METHODS, NUMBER_REPORT_UNASSIGNED } from '../services/treasuryService.js';
+import { maskSourceInResult, maskSource } from '../lib/pii.js';
+import { BadRequestError } from '../lib/errors.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate } from '../lib/validate.js';
@@ -48,14 +49,34 @@ router.post('/reconcile', roleMiddleware(['owner', 'manager']), validate(reconci
 
 // Get transactions history
 router.get('/transactions', routeHandler(async (req) => {
-    const { startDate, endDate, type, page, limit, category } = req.query;
+    const { startDate, endDate, type, page, limit, category, method, sourceNumber, referenceType } = req.query;
     // T-RPT-02: the dedicated history endpoint serves a "transaction log"
     // surface where the user may legitimately want a year of data. Allow
     // up to 365 days here (vs the default 90-day cap used by the
     // /summary endpoint) so manual switching to "Year" doesn't blank
     // the page. Hard cap is still enforced server-side.
-    const result = await TreasuryService.getTransactions(startDate, endDate, type, null, { page, limit, maxDays: 365, category });
+    // FIN-RPT-01: optional method/sourceNumber/referenceType narrow the
+    // same ledger for per-number report detail rows.
+    const result = await TreasuryService.getTransactions(startDate, endDate, type, null, { page, limit, maxDays: 365, category, method, sourceNumber, referenceType });
     return maskSourceInResult(result, req.user.role);
+}));
+
+// FIN-RPT-01: per-number movement aggregates for wallet / instapay.
+// Read-only; totals are computed server-side so the UI never sums money.
+router.get('/number-report', routeHandler(async (req) => {
+    const { method, startDate, endDate, direction, referenceType } = req.query;
+    const rawNumbers = req.query.numbers ?? req.query['numbers[]'];
+    const numbers = rawNumbers == null ? [] : (Array.isArray(rawNumbers) ? rawNumbers : String(rawNumbers).split(','));
+    if (!NUMBER_REPORT_METHODS.includes(method)) {
+        throw new BadRequestError('method must be one of: wallet, instapay');
+    }
+    const result = await TreasuryService.getNumberReport({ method, numbers, startDate, endDate, direction, referenceType });
+    if (result?.numbers && !['owner', 'manager'].includes(req.user.role)) {
+        for (const row of result.numbers) {
+            if (row.number !== NUMBER_REPORT_UNASSIGNED) row.number = maskSource(row.number);
+        }
+    }
+    return result;
 }));
 
 // Add manual income
