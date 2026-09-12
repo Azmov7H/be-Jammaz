@@ -85,7 +85,7 @@ export function methodLabel(method) {
 export function maskSource(sourceNumber) {
     if (sourceNumber == null || String(sourceNumber).trim() === '') return '';
     const s = String(sourceNumber).trim();
-    if (s.length <= 5) return `${s.slice(0, 1)}****${s.slice(-1)}`;
+    if (s.length <= 4) return '****';
     return `${s.slice(0, 3)}****${s.slice(-2)}`;
 }
 
