@@ -39,6 +39,22 @@ export const CASHBOX_EXPENSE_BUCKETS = [
 ];
 
 /**
+ * FIN-CASHBOX-02 (T-07): opening-balance carry for a new day doc. Every
+ * creation branch must use this — the old branches each carried a different
+ * subset (instapay was dropped everywhere, bank/wallet/check were dropped
+ * on manual-first days), breaking the per-method day chain.
+ */
+export function cashboxOpenings(previousDay) {
+    return {
+        openingBalance: previousDay?.closingBalance || 0,
+        openingBankBalance: previousDay?.closingBankBalance || 0,
+        openingWalletBalance: previousDay?.closingWalletBalance || 0,
+        openingCheckBalance: previousDay?.closingCheckBalance || 0,
+        openingInstapayBalance: previousDay?.closingInstapayBalance || 0,
+    };
+}
+
+/**
  * Resolve the CashboxDaily aggregate field for a (method, type) pair.
  * @param {string} method payment method (cash/bank/wallet/check/instapay/...)
  * @param {'INCOME'|'EXPENSE'} type transaction direction
@@ -368,10 +384,7 @@ export const TreasuryService = {
 
             const created = await CashboxDaily.create([{
                 date: startOfDay,
-                openingBalance: previousDay?.closingBalance || 0,
-                openingBankBalance: previousDay?.closingBankBalance || 0,
-                openingWalletBalance: previousDay?.closingWalletBalance || 0,
-                openingCheckBalance: previousDay?.closingCheckBalance || 0,
+                ...cashboxOpenings(previousDay),
                 salesIncome: 0,
                 purchaseExpenses: 0,
                 bankIncome: 0,
@@ -385,13 +398,14 @@ export const TreasuryService = {
         }
 
         // T-DB-06: atomic increment — no read-modify-write on balances.
+        // NOTE: 'adjustment' was dropped from this list (T-07) — no schema
+        // field exists by that name, and fieldFor() never resolves to it.
         const allowedFields = [
             'salesIncome', 'purchaseExpenses',
             'bankIncome', 'bankExpenses',
             'walletIncome', 'walletExpenses',
             'checkIncome', 'checkExpenses',
-            'instapayIncome', 'instapayExpenses',
-            'adjustment'
+            'instapayIncome', 'instapayExpenses'
         ];
 
         const incUpdate = {};
@@ -474,7 +488,7 @@ export const TreasuryService = {
 
             const created = await CashboxDaily.create([{
                 date: startOfDay,
-                openingBalance: previousDay?.closingBalance || 0
+                ...cashboxOpenings(previousDay)
             }], { session });
             cashbox = created[0];
         }
@@ -527,7 +541,7 @@ export const TreasuryService = {
 
             const created = await CashboxDaily.create([{
                 date: startOfDay,
-                openingBalance: previousDay?.closingBalance || 0
+                ...cashboxOpenings(previousDay)
             }], { session });
             cashbox = created[0];
         }
