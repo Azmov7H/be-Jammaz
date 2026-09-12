@@ -327,6 +327,40 @@ export const AccountingService = {
     },
 
     /**
+     * FIN-GLREV-01 (T-06): write compensating REVERSAL mirrors for every
+     * non-REVERSAL entry linked to (refType, refId) — used when the business
+     * object is cancelled (reverseSale via deleteTransactionByRef) or when a
+     * Manual leg is undone. Swapped accounts + positive amount keep all
+     * P&L/balance-sheet aggregations net-neutral by construction.
+     * Pass entryIds to mirror an exact set instead of the whole ref pair.
+     * @returns {number} count of mirrors written
+     */
+    async createReversalEntries(refType, refId, userId, session = null, entryIds = null) {
+        await dbConnect();
+        const query = entryIds
+            ? { _id: { $in: entryIds }, type: { $ne: 'REVERSAL' } }
+            : { refType, refId, type: { $ne: 'REVERSAL' } };
+        const linked = await AccountingEntry.find(query).session(session).lean();
+        let count = 0;
+        for (const entry of linked) {
+            await AccountingEntry.createEntry({
+                type: 'REVERSAL',
+                debitAccount: entry.creditAccount,
+                creditAccount: entry.debitAccount,
+                amount: entry.amount,
+                description: `تراجع: ${entry.description}`,
+                refType: entry.refType,
+                refId: entry.refId,
+                userId,
+                date: new Date(),
+                session
+            });
+            count += 1;
+        }
+        return count;
+    },
+
+    /**
      * Get ledger for a specific account
      */
     async getLedger(accountName, startDate = null, endDate = null) {

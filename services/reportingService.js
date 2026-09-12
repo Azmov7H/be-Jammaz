@@ -33,35 +33,51 @@ export const ReportingService = {
         if (end) end.setHours(23, 59, 59, 999);
 
         // Run both aggregations in parallel to reduce execution time
+        // FIN-GLREV-01 (T-06): REVERSAL entries net against the side they
+        // mirror — a REVERSAL debiting a revenue account offsets revenue, a
+        // REVERSAL crediting an expense account offsets that expense. Plain
+        // one-sided sums would keep phantom profit after a cancellation.
         const [revenueEntries, expenseEntries] = await Promise.all([
-            // Revenue (Credits)
+            // Revenue (Credits, minus REVERSAL debits to revenue accounts)
             AccountingEntry.aggregate([
                 {
                     $match: {
                         date: { $gte: start, $lte: end },
-                        creditAccount: { $in: [ACCOUNTS.SALES_REVENUE, ACCOUNTS.OTHER_INCOME, ACCOUNTS.SURPLUS_INCOME] }
+                        $or: [
+                            {
+                                creditAccount: { $in: [ACCOUNTS.SALES_REVENUE, ACCOUNTS.OTHER_INCOME, ACCOUNTS.SURPLUS_INCOME] },
+                                type: { $ne: 'REVERSAL' }
+                            },
+                            {
+                                debitAccount: { $in: [ACCOUNTS.SALES_REVENUE, ACCOUNTS.OTHER_INCOME, ACCOUNTS.SURPLUS_INCOME] },
+                                type: 'REVERSAL'
+                            }
+                        ]
                     }
                 },
                 {
                     $group: {
-                        _id: '$creditAccount',
-                        total: { $sum: '$amount' }
+                        _id: { $cond: [{ $eq: ['$type', 'REVERSAL'] }, '$debitAccount', '$creditAccount'] },
+                        total: { $sum: { $cond: [{ $eq: ['$type', 'REVERSAL'] }, { $multiply: ['$amount', -1] }, '$amount'] } }
                     }
                 }
             ]),
 
-            // Expenses (Debits)
+            // Expenses (Debits, minus REVERSAL credits to expense accounts)
             AccountingEntry.aggregate([
                 {
                     $match: {
                         date: { $gte: start, $lte: end },
-                        debitAccount: { $in: expenseAccountsList }
+                        $or: [
+                            { debitAccount: { $in: expenseAccountsList }, type: { $ne: 'REVERSAL' } },
+                            { creditAccount: { $in: expenseAccountsList }, type: 'REVERSAL' }
+                        ]
                     }
                 },
                 {
                     $group: {
-                        _id: '$debitAccount',
-                        total: { $sum: '$amount' }
+                        _id: { $cond: [{ $eq: ['$type', 'REVERSAL'] }, '$creditAccount', '$debitAccount'] },
+                        total: { $sum: { $cond: [{ $eq: ['$type', 'REVERSAL'] }, { $multiply: ['$amount', -1] }, '$amount'] } }
                     }
                 }
             ])

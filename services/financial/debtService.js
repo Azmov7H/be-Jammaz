@@ -12,7 +12,14 @@ export class DebtService {
     /**
      * Create a new debt record
      */
-    static async createDebt({
+    static async createDebt(args, session = null) {
+        // FIN-ATOMIC-01 (T-04): POST /debts and syncDebts arrive without a
+        // session — give them one. Callers inside a txn pass theirs (no nesting).
+        if (session) return this._createDebt(args, session);
+        return withTransaction((s) => this._createDebt(args, s));
+    }
+
+    static async _createDebt({
         debtorType,
         debtorId,
         amount,
@@ -589,6 +596,13 @@ export class DebtService {
      * Delete a debt record and reverse its effect on parent balance
      */
     static async deleteDebt(id, session = null) {
+        // FIN-ATOMIC-01 (T-04): DELETE /debts/:id arrives without a session —
+        // give it one. reverseSale passes its own (no nesting).
+        if (session) return this._deleteDebt(id, session);
+        return withTransaction((s) => this._deleteDebt(id, s));
+    }
+
+    static async _deleteDebt(id, session = null) {
         await dbConnect();
         const debt = await Debt.findById(id).session(session);
         if (!debt) throw new NotFoundError('Debt not found');

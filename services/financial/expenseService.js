@@ -2,6 +2,7 @@ import dbConnect from '../../lib/db.js';
 import { TreasuryService } from '../treasuryService.js';
 import { LogService } from '../logService.js';
 import { BadRequestError } from '../../lib/errors.js';
+import { withTransaction } from '../../utils/dbUtils.js';
 
 /**
  * Expense Service
@@ -13,7 +14,10 @@ export const ExpenseService = {
      */
     async recordExpense(data, userId) {
         await dbConnect();
-        try {
+        // FIN-ATOMIC-01 (T-04): treasury + GL + log all-or-nothing. The old
+        // code passed null sessions, so a crash between writes desynced the
+        // ledger from profit.
+        return withTransaction(async (session) => {
             const { amount, reason, category, date = new Date(), method = 'cash', sourceNumber } = data;
 
             if (!amount || amount <= 0 || !reason || !category) {
@@ -28,14 +32,14 @@ export const ExpenseService = {
                 category,
                 userId,
                 method,
-                null, // session
+                session,
                 sourceNumber // FIN-SVC-003 (Sprint 3)
             );
 
-            // 2. General ledger — expense entry (single doc, no txn in this flow)
+            // 2. General ledger — expense entry in the same transaction.
             const { AccountingService } = await import('../accountingService.js');
             await AccountingService.createExpenseEntry(
-                parseFloat(amount), category, reason, userId, new Date(date)
+                parseFloat(amount), category, reason, userId, new Date(date), session
             );
 
             // 3. Logging
@@ -46,12 +50,10 @@ export const ExpenseService = {
                 entityId: treasuryRecord._id,
                 diff: { amount, category, reason },
                 note: `General expense recorded: ${reason}`
-            });
+            }, session);
 
             return { treasuryRecord };
-        } catch (error) {
-            throw error;
-        }
+        });
     }
 };
 
