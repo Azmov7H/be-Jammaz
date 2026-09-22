@@ -130,23 +130,6 @@ async create(data, userId) {
      * Internal helper to process and validate items
      * @private
      */
-    /**
-     * Server-resolved sell price for one product/customer pair.
-     * Priority mirrors PricingService.getPrice: custom > tier > retail.
-     */
-    _resolveServerPrice(product, customer) {
-        if (customer) {
-            const custom = customer.getPriceForProduct
-                ? customer.getPriceForProduct(product._id)
-                : null;
-            if (custom !== null && custom !== undefined) return Number(custom);
-            const tier = customer.priceType || 'retail';
-            if (tier === 'wholesale' && product.wholesalePrice != null) return Number(product.wholesalePrice);
-            if (tier === 'special' && product.specialPrice != null) return Number(product.specialPrice);
-        }
-        return Number(product.retailPrice);
-    },
-
     async _processInvoiceItems(items, session, customer = null) {
         let subtotal = 0;
         let totalCost = 0;
@@ -176,14 +159,13 @@ async create(data, userId) {
                 productName = product.name;
                 costPrice = product.buyPrice || 0;
 
-                // Flexible pricing: the client may charge ABOVE the
-                // system price (price fluctuations). Only a price BELOW
-                // the server-resolved price is rejected; the sent price
-                // is kept as-is so profit reflects what was charged.
-                const serverPrice = this._resolveServerPrice(product, customer);
-                if (!Number.isFinite(unitPrice) || unitPrice < serverPrice - 0.005) {
+                // Unrestricted pricing (product requirement): the user may
+                // charge ANY selling price — above or below the system/agreed
+                // price, even at a loss. The sent price is kept as-is so
+                // profit reflects exactly what was charged.
+                if (!Number.isFinite(unitPrice) || unitPrice < 0) {
                     throw new AppError(
-                        `السعر المرسل (${item.unitPrice}) أقل من سعر النظام (${serverPrice}) للمنتج: ${productName}`,
+                        `السعر غير صالح: ${item.unitPrice} للمنتج: ${productName}`,
                         400
                     );
                 }

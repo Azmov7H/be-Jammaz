@@ -105,22 +105,23 @@ describe('Sprint 18 — Customer-specific pricing', () => {
         expect(Number(res.body.data.total)).toBe(1500);
     });
 
-    it('T1b2: invoice still rejects when client price is BELOW server-resolved price', async () => {
+    it('T1b2: unrestricted pricing — client price BELOW server price is accepted (loss allowed)', async () => {
         const product = await createProduct();
         const customer = await createCustomer();
 
-        // Set custom price to 1450; client tries to charge 1400.
+        // Set custom price to 1450; client charges 1400 (below the agreed price).
         await request.post(`/api/customers/${id(customer)}/pricing`)
         .set('Cookie', ownerCookie)
             .send({ productId: id(product), price: 1450 });
 
-        const bad = await request.post('/api/invoices').set('Cookie', ownerCookie).send({
+        const res = await request.post('/api/invoices').set('Cookie', ownerCookie).send({
             customerId: id(customer),
             items: [{ productId: id(product), qty: 1, unitPrice: 1400 }],
             paymentType: 'cash',
         });
-        expect(bad.status).toBe(400);
-        expect(String(bad.body.message)).toMatch(/السعر/);
+        ok(res, 'create invoice below server price');
+        expect(Number(res.body.data.items[0].unitPrice)).toBe(1400);
+        expect(Number(res.body.data.total)).toBe(1400);
     });
 
     it('T1c: tier wholesale price overrides retail', async () => {

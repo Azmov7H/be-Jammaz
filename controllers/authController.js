@@ -1,5 +1,5 @@
 import { AuthService } from '../services/authService.js';
-import { verifyToken } from '../lib/auth.js';
+import { verifyToken, JWT_EXPIRES_IN_MS } from '../lib/auth.js';
 import { loginSchema } from '../validations/index.js';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -17,9 +17,11 @@ const baseCookie = {
 
 function setAuthCookies(res, { token, refreshToken }) {
         // Access cookie stays on '/' so API reads work as before.
+        // maxAge mirrors the configured access-token TTL so the session
+        // lasts the full requested duration (e.g. 3 days).
         res.cookie('token', token, {
             ...baseCookie,
-            maxAge: 60 * 60 * 24 * 1000,
+            maxAge: JWT_EXPIRES_IN_MS,
             path: '/',
         });
         // Refresh cookie is scoped to the auth endpoints only.
