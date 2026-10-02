@@ -174,6 +174,8 @@ export const PaymentService = {
                     remainingAmount -= paymentToApply;
                     appliedPayments.push({
                         debtId: debt._id,
+                        referenceType: debt.referenceType,
+                        referenceId: debt.referenceId || null,
                         reference: debt.referenceType === 'Invoice' ? `Invoice #${debt.referenceId}` : 'Manual Debt',
                         amountApplied: paymentToApply
                     });
@@ -206,7 +208,15 @@ export const PaymentService = {
                 note || `تحصيل مجمع من الرصيد الإجمالي - ${appliedPayments.length} مديونية`,
                 {
                     customerBalanceAfter: finalCustomer ? finalCustomer.balance : customer.balance,
-                    appliedPaymentsCount: appliedPayments.length
+                    appliedPaymentsCount: appliedPayments.length,
+                    // FIN-REV-01 (T-REV): the per-debt distribution is what
+                    // makes a compensating reversal of this collection exact.
+                    appliedPayments: appliedPayments.map(p => ({
+                        debtId: p.debtId,
+                        referenceType: p.referenceType,
+                        referenceId: p.referenceId || null,
+                        amountApplied: p.amountApplied
+                    }))
                 },
                 session,
                 sourceNumber

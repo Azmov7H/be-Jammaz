@@ -215,6 +215,17 @@ router.delete('/transaction/:id', deprecated, validateParams(z.object({ id: idSc
     return await TreasuryService.undoTransaction(req.params.id, req.user._id);
 }));
 
+// FIN-REV-01 (T-REV): compensating reversal (keep history).
+// ALIAS of canonical POST /api/treasury/transactions/:id/reverse.
+router.post('/transaction/:id/reverse', deprecated,
+    validateParams(z.object({ id: idSchema })),
+    roleMiddleware(['owner']),
+    validate(z.object({ reason: z.string().trim().max(500).optional() }).default({})),
+    routeHandler(async (req) => {
+        return await TreasuryService.reverseTransaction(req.params.id, req.user._id, { reason: req.body.reason || '' });
+    })
+);
+
 // Daily cashbox details.
 // ALIAS of canonical GET /api/treasury/daily.
 router.get('/daily', deprecated, routeHandler(async (req) => {

@@ -142,6 +142,7 @@ export async function fetch({ id, customerId, startDate, endDate, type, user }) 
 
     const txLines = transactions.map(tx => {
         const isIncome = tx.type === 'INCOME';
+        const txMeta = (tx.meta && typeof tx.meta === 'object') ? tx.meta : {};
         return {
             date: tx.date,
             type: isIncome ? 'PAYMENT' : 'REFUND',
@@ -160,6 +161,13 @@ export async function fetch({ id, customerId, startDate, endDate, type, user }) 
                 ? (canSeeSource ? tx.sourceNumber : maskIt(tx.sourceNumber))
                 : '',
             createdBy: '',
+            // FIN-REV-01: reversal metadata (non-printable) for per-row
+            // compensating reversal from the tab.
+            txId: tx._id,
+            referenceType: tx.referenceType,
+            isReversed: !!tx.isReversed,
+            isReversal: tx.referenceType === 'Reversal',
+            isPaymentLeg: Object.keys(txMeta).length > 0,
         };
     });
 

@@ -168,6 +168,57 @@ export class DebtService {
     }
 
     /**
+     * FIN-REV-01 (T-REV): inverse of updateBalance — reverses a payment on a
+     * debt (compensating reversal of a Debt-linked treasury row). Restores
+     * remainingAmount and the debtor's cached balance, and re-opens a settled
+     * debt as active/overdue (never reopens a written-off debt).
+     */
+    static async unpayDebt(id, amount, session = null) {
+        // FIN-ATOMIC-01 (T-04): standalone calls get their own txn; callers
+        // inside a txn (reversal) pass their session (no nesting).
+        if (session) return this._unpayDebt(id, amount, session);
+        return withTransaction((s) => this._unpayDebt(id, amount, s));
+    }
+
+    static async _unpayDebt(id, amount, session = null) {
+        await dbConnect();
+        const value = Number(amount);
+        if (!Number.isFinite(value) || value <= 0) {
+            throw new BadRequestError('مبلغ عكس السداد يجب أن يكون رقمًا موجبًا');
+        }
+
+        const debt = await Debt.findById(id).session(session);
+        if (!debt) throw new NotFoundError('Debt not found');
+        if (debt.status === 'written-off') {
+            throw new ConflictError('لا يمكن عكس سداد على مديونية مشطوبة');
+        }
+
+        // Guarded against exceeding the original amount (diverged data needs
+        // review, not a silent over-restore).
+        const nextRemaining = Number((Number(debt.remainingAmount || 0) + value).toFixed(2));
+        if (nextRemaining - Number(debt.originalAmount || 0) > 0.01) {
+            throw new ConflictError(
+                `تعذر عكس السداد: يتجاوز أصل المديونية (${Number(debt.originalAmount || 0).toLocaleString()}) — راجع السجلات`
+            );
+        }
+
+        debt.remainingAmount = nextRemaining;
+        // Re-open the debt (settled → active/overdue by due date).
+        debt.status = new Date(debt.dueDate) < new Date() ? 'overdue' : 'active';
+        await debt.save({ session });
+
+        // Restore the debtor's cached balance (updateBalance decremented it).
+        const Model = debt.debtorType === 'Customer'
+            ? (await import('../../models/Customer.js')).default
+            : (await import('../../models/Supplier.js')).default;
+        await Model.findByIdAndUpdate(debt.debtorId, {
+            $inc: { balance: value }
+        }).session(session);
+
+        return debt;
+    }
+
+    /**
      * Update debt record manually
      */
     static async updateDebt(id, data, userId = null) {

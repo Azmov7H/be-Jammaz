@@ -4,8 +4,8 @@ import { maskSourceInResult, maskSource } from '../lib/pii.js';
 import { BadRequestError } from '../lib/errors.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
-import { validate } from '../lib/validate.js';
-import { reconcileSchema, manualIncomeSchema, expenseSchema, sourceRequiredRefine, sourceNumberSchema } from '../validations/index.js';
+import { validate, validateParams } from '../lib/validate.js';
+import { reconcileSchema, manualIncomeSchema, expenseSchema, sourceRequiredRefine, sourceNumberSchema, idSchema } from '../validations/index.js';
 import { z } from 'zod';
 
 const router = express.Router();
@@ -101,5 +101,23 @@ router.post('/manual-expense', roleMiddleware(['owner', 'manager']), validate(ex
 router.delete('/transactions/:id', roleMiddleware(['owner']), routeHandler(async (req) => {
     return await TreasuryService.undoTransaction(req.params.id, req.user._id);
 }));
+
+// FIN-REV-01 (T-REV): compensating reversal — KEEPS the original ledger row,
+// writes a visible flipped-type 'Reversal' counter-entry, restores linked
+// party/debt/PO balances and the day cashbox, and audits the move. Owner-only
+// (the same ACL as the deprecated destructive undo). Rejected with guidance
+// for TahweeshTransfer and P&L-linked document rows (invoice/return) — cancel
+// the source document there instead.
+const reverseBody = z.object({
+    reason: z.string().trim().max(500).optional()
+}).default({});
+router.post('/transactions/:id/reverse',
+    roleMiddleware(['owner']),
+    validateParams(z.object({ id: idSchema })),
+    validate(reverseBody),
+    routeHandler(async (req) => {
+        return await TreasuryService.reverseTransaction(req.params.id, req.user._id, { reason: req.body.reason || '' });
+    })
+);
 
 export default router;

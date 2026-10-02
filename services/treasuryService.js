@@ -944,6 +944,46 @@ export const TreasuryService = {
             }
         }
 
+        // FIN-REV-01 (T-REV): Reversal rows carry no referenceId (their
+        // subject is the ORIGINAL row, reachable via `reversalOf`). Hydrate
+        // the original's essentials into `reversalOf` and the party into a
+        // referenceId-shaped object so the ledger keeps rendering a partner
+        // and the details dialog can link back to the reversed row.
+        const revDocs = docs.filter((d) => d.referenceType === 'Reversal');
+        if (revDocs.length) {
+            const originalIds = [...new Set(revDocs.map((d) => d.reversalOf && String(d.reversalOf)).filter(Boolean))];
+            const originals = originalIds.length
+                ? await TreasuryTransaction.find({ _id: { $in: originalIds } })
+                    .select('type referenceType description partnerId date')
+                    .lean()
+                : [];
+            const originalsById = new Map(originals.map((o) => [String(o._id), o]));
+            const partnerIds = [...new Set(revDocs.map((d) => d.partnerId && String(d.partnerId)).filter(Boolean))];
+            let partnersById = new Map();
+            if (partnerIds.length) {
+                const [custs, supps] = await Promise.all([
+                    (await import('../models/Customer.js')).default.find({ _id: { $in: partnerIds } }).select('name').lean(),
+                    (await import('../models/Supplier.js')).default.find({ _id: { $in: partnerIds } }).select('name').lean(),
+                ]);
+                partnersById = new Map([...custs, ...supps].map((p) => [String(p._id), p.name]));
+            }
+            for (const d of revDocs) {
+                const original = originalsById.get(d.reversalOf ? String(d.reversalOf) : '');
+                if (original) {
+                    d.reversalOf = {
+                        _id: original._id,
+                        type: original.type,
+                        referenceType: original.referenceType,
+                        description: original.description,
+                        partnerId: original.partnerId,
+                        date: original.date,
+                    };
+                }
+                const pname = partnersById.get(d.partnerId ? String(d.partnerId) : '');
+                if (pname) d.referenceId = { _id: d.partnerId, name: pname };
+            }
+        }
+
         return { transactions: docs, total, page: pageNum, limit: cappedLimit };
     },
 
@@ -1322,6 +1362,300 @@ export const TreasuryService = {
             const { AccountingService } = await import('./accountingService.js');
             await AccountingService.createReversalEntries(
                 'Manual', fresh[0].refId, userId, session, [fresh[0]._id]
+            );
+        }
+    },
+
+    /**
+     * FIN-REV-01 (T-REV): compensating reversal — KEEPS the original row and
+     * writes a visible flipped-type 'Reversal' counter-entry. The original's
+     * day cashbox bucket is reversed, linked party/debt/PO balances are
+     * restored, the Manual GL twin is mirrored (existing guard), and the whole
+     * move is audited via LogService.
+     *
+     * Never used for destroying history: the original is marked isReversed and
+     * stays in every report/statement; balances net to zero by construction.
+     * @returns {{ success: boolean, reversalId: ObjectId }}
+     */
+    async reverseTransaction(transactionId, userId, { reason = '' } = {}, session = null) {
+        // FIN-ATOMIC-01 (T-04): standalone reversal (routes) is atomic; callers
+        // inside a txn pass their session (no nesting).
+        if (session) return this._reverseTransaction(transactionId, userId, { reason }, session);
+        return withTransaction((s) => this._reverseTransaction(transactionId, userId, { reason }, s));
+    },
+
+    /**
+     * @private Shared core of reverseTransaction (callers hold a session).
+     */
+    async _reverseTransaction(transactionId, userId, { reason = '' } = {}, session = null) {
+        const transaction = await TreasuryTransaction.findById(transactionId).session(session);
+        if (!transaction) throw new NotFoundError('المعاملة غير موجودة');
+
+        // Replay guard: a reversal cannot itself be reversed, and a row can be
+        // reversed exactly once (also enforced by the partial unique index on
+        // reversalOf).
+        if (transaction.referenceType === 'Reversal' || transaction.isReversed) {
+            throw new ConflictError('هذه المعاملة سُبِق التراجع عنها بالفعل');
+        }
+
+        // Reuse the FIN-GLREV-01 policy verbatim: refuses TahweeshTransfer and
+        // P&L-linked document rows (cancel the source document instead), and
+        // mirrors a Manual GL twin when exactly one exists.
+        await this._guardOrCompensateGL(transaction, userId, session);
+
+        // 1. Reverse the original day's cashbox effect (exact inverse of the
+        //    write). The Reversal row itself books no extra bucket — a flipped
+        //    entry IS the inverse, applied once.
+        const startOfDay = new Date(transaction.date);
+        startOfDay.setHours(0, 0, 0, 0);
+        const cashbox = await CashboxDaily.findOne({ date: startOfDay }).session(session);
+        if (cashbox) {
+            reverseCashboxFor(transaction, cashbox);
+            await cashbox.save({ session });
+        }
+
+        // 2. Compensating counter-entry (flipped type). _createTransactions
+        //    applies the exact opposite balance delta atomically, so the
+        //    running TreasuryBalance returns to its pre-move state.
+        const flippedType = transaction.type === 'INCOME' ? 'EXPENSE' : 'INCOME';
+        const description = `تراجع عن: ${transaction.description}${reason ? ` - ${reason}` : ''}`;
+        // The Reversal row deliberately carries NO referenceId: that field is
+        // refPath('referenceType'), so a value here would make Mongoose try to
+        // populate a model literally named "Reversal" and throw. The link back
+        // to the reversed ledger row lives in `reversalOf` (static ref →
+        // TreasuryTransaction); the source document survives in meta.
+        const [reversal] = await this._createTransactions([{
+            type: flippedType,
+            amount: transaction.amount,
+            description,
+            referenceType: 'Reversal',
+            reversalOf: transaction._id,
+            partnerId: transaction.partnerId,
+            date: new Date(),
+            method: transaction.method,
+            sourceNumber: transaction.sourceNumber,
+            createdBy: userId,
+            reason: reason || '',
+            meta: {
+                reversedRefType: transaction.referenceType,
+                reversedRefId: transaction.referenceId,
+                reversedTxType: transaction.type,
+                ...(transaction.meta && typeof transaction.meta === 'object' ? transaction.meta : {})
+            }
+        }], session);
+
+        // 3. Restore every linked balance the original move touched, so the
+        //    reversal fixes, not recreates, deficits/surpluses.
+        await this._restoreReversalTargets(transaction, session);
+
+        // 4. Keep the history — flag the original, don't delete it.
+        transaction.isReversed = true;
+        transaction.reversedAt = new Date();
+        transaction.reversedBy = userId;
+        transaction.reason = reason || '';
+        await transaction.save({ session });
+
+        // 5. Audit — reversal is the single most money-critical write and was
+        //    previously unaudited (FIN-REV concern).
+        const { LogService } = await import('./logService.js');
+        await LogService.logAction({
+            userId,
+            action: 'REVERSE_TRANSACTION',
+            entity: 'TreasuryTransaction',
+            entityId: transaction._id,
+            diff: {
+                reversalId: reversal._id,
+                amount: transaction.amount,
+                originalType: transaction.type,
+                reversedRefType: transaction.referenceType,
+                reason: reason || ''
+            },
+            note: `تراجع عن معاملة ${transaction.referenceType} بمبلغ ${transaction.amount}`
+        }, session);
+
+        return { success: true, reversalId: reversal._id };
+    },
+
+    /**
+     * FIN-REV-01 (T-REV): restore whatever state the original move changed.
+     * Matched by referenceType so the accounting the payment flowed through is
+     * un-done exactly once (mirror of the write paths in paymentService).
+     */
+    async _restoreReversalTargets(tx, session = null) {
+        // Manual credit-refund (RefundService): put the credit back.
+        if (tx.referenceType === 'Manual' && tx.meta?.isCreditRefund && tx.meta?.customerId) {
+            const Customer = (await import('../models/Customer.js')).default;
+            await Customer.findByIdAndUpdate(
+                tx.meta.customerId,
+                { $inc: { creditBalance: tx.amount } },
+                { session }
+            );
+            return;
+        }
+
+        if (!tx.referenceType || !tx.referenceId) return;
+
+        if (tx.referenceType === 'Debt') {
+            const { DebtService } = await import('./financial/debtService.js');
+            await DebtService.unpayDebt(tx.referenceId, tx.amount, session);
+            return;
+        }
+
+        if (tx.referenceType === 'PurchaseOrder') {
+            await this._restorePurchaseOrderPayment(tx, session);
+            return;
+        }
+
+        if (tx.referenceType === 'UnifiedCollection') {
+            await this._restoreUnifiedCollection(tx, session);
+            return;
+        }
+
+        if (tx.referenceType === 'Invoice') {
+            // Reached only for invoices without P&L GL (the guard let them
+            // through). Restore the invoice payment + partner balance.
+            await this._restoreInvoicePayment(tx, session);
+            return;
+        }
+
+        // 'Manual' (non-credit-refund) and everything else carry no linked
+        // balance to restore.
+    },
+
+    /**
+     * Decrement an invoice's paidAmount + recompute paymentStatus (inverse of
+     * InvoiceSchema.methods.recordPayment / the unified-collection pipeline).
+     */
+    async _restoreInvoicePaymentRow(invoiceId, amount, session = null) {
+        const Invoice = (await import('../models/Invoice.js')).default;
+        await Invoice.findOneAndUpdate(
+            { _id: invoiceId },
+            [
+                { $set: {
+                    paidAmount: { $max: [{ $subtract: [{ $ifNull: ['$paidAmount', 0] }, amount] }, 0] }
+                } },
+                { $set: {
+                    paymentStatus: {
+                        $cond: [{ $gte: ['$paidAmount', '$total'] }, 'paid',
+                            { $cond: [{ $gt: ['$paidAmount', 0] }, 'partial', 'pending'] }]
+                    }
+                } }
+            ],
+            { session }
+        );
+    },
+
+    /**
+     * Inverse of recordCustomerPayment (invoice collection).
+     */
+    async _restoreInvoicePayment(tx, session = null) {
+        const Customer = (await import('../models/Customer.js')).default;
+        const Debt = (await import('../models/Debt.js')).default;
+        const amount = Number(tx.amount) || 0;
+
+        await this._restoreInvoicePaymentRow(tx.referenceId, amount, session);
+
+        const debt = await Debt.findOne({ referenceType: 'Invoice', referenceId: tx.referenceId }).session(session);
+        if (debt && debt.debtorType === 'Customer' && debt.status !== 'written-off') {
+            const { DebtService } = await import('./financial/debtService.js');
+            await DebtService.unpayDebt(debt._id, amount, session);
+        } else if (tx.partnerId) {
+            // Mirrors recordCustomerPayment's fallback Customer decrement.
+            await Customer.findByIdAndUpdate(tx.partnerId, { $inc: { balance: amount } }, { session });
+        }
+    },
+
+    /**
+     * Inverse of recordSupplierPayment (PO payment).
+     */
+    async _restorePurchaseOrderPayment(tx, session = null) {
+        const PurchaseOrder = (await import('../models/PurchaseOrder.js')).default;
+        const Supplier = (await import('../models/Supplier.js')).default;
+        const Debt = (await import('../models/Debt.js')).default;
+        const amount = Number(tx.amount) || 0;
+
+        // FIN-REV-01: only PAYMENT legs are reversible. recordSupplierPayment
+        // always writes meta (e.g. customerBalanceAfter); the PO receive
+        // (purchase) leg carries no meta — reversing it would un-pay a credit
+        // purchase without restoring stock. Refuse rather than half-restore.
+        const txMeta = (tx.meta && typeof tx.meta === 'object') ? tx.meta : {};
+        if (!txMeta || Object.keys(txMeta).length === 0) {
+            throw new ConflictError(
+                'هذه الحركة تمثل استلام أمر الشراء وليست دفعة للمورد. راجع أمر الشراء لإلغاء الاستلام'
+            );
+        }
+
+        const po = await PurchaseOrder.findById(tx.referenceId).session(session);
+        if (!po) return;
+
+        const updated = await PurchaseOrder.findOneAndUpdate(
+            { _id: po._id },
+            [
+                { $set: {
+                    paidAmount: { $max: [{ $subtract: [{ $ifNull: ['$paidAmount', 0] }, amount] }, 0] }
+                } },
+                { $set: {
+                    paymentStatus: {
+                        $cond: [{ $gte: ['$paidAmount', '$totalCost'] }, 'paid',
+                            { $cond: [{ $gt: ['$paidAmount', 0] }, 'partial', 'pending'] }]
+                    }
+                } }
+            ],
+            { new: true, session }
+        );
+
+        // Mirrors recordSupplierPayment: debit via the linked debt when one
+        // exists, otherwise a direct Supplier balance decrement.
+        const debt = await Debt.findOne({ referenceType: 'PurchaseOrder', referenceId: po._id }).session(session);
+        if (debt && debt.debtorType === 'Supplier' && debt.status !== 'written-off') {
+            const { DebtService } = await import('./financial/debtService.js');
+            await DebtService.unpayDebt(debt._id, amount, session);
+        } else if (updated?.supplier) {
+            await Supplier.findByIdAndUpdate(updated.supplier, { $inc: { balance: amount } }, { session });
+        }
+    },
+
+    /**
+     * Inverse of recordTotalCustomerPayment (unified collection). Needs the
+     * per-debt distribution that recordTotalCustomerPayment now persists in
+     * meta.appliedPayments; legacy rows without it are refused rather than
+     * half-restored.
+     */
+    async _restoreUnifiedCollection(tx, session = null) {
+        const meta = (tx.meta && typeof tx.meta === 'object') ? tx.meta : {};
+        const applied = Array.isArray(meta.appliedPayments) ? meta.appliedPayments : null;
+        if (!applied || applied.length === 0) {
+            throw new ConflictError(
+                'لا يمكن عكس هذا التحصيل المجمع بدقة: صُدّرت الحركة قبل حفظ توزيع المديونيات. راجع السجلات يدويًا أولًا'
+            );
+        }
+
+        const Customer = (await import('../models/Customer.js')).default;
+        const { DebtService } = await import('./financial/debtService.js');
+
+        const total = Number(tx.amount) || 0;
+        let restored = 0;
+        for (const p of applied) {
+            const paid = Number(p.amountApplied) || 0;
+            if (paid <= 0) continue;
+
+            if (p.referenceType === 'Invoice' && p.referenceId) {
+                await this._restoreInvoicePaymentRow(p.referenceId, paid, session);
+            }
+            if (p.debtId) {
+                await DebtService.unpayDebt(p.debtId, paid, session);
+            }
+            restored += paid;
+        }
+
+        // Residual (applied to no debt) was written off Customer.balance
+        // directly — put it back.
+        const residual = Number((total - restored).toFixed(2));
+        if (residual > 0.01) {
+            await Customer.findByIdAndUpdate(
+                tx.partnerId || tx.referenceId,
+                { $inc: { balance: residual } },
+                { session }
             );
         }
     },

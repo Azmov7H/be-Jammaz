@@ -29,7 +29,11 @@ const TreasuryTransactionSchema = new mongoose.Schema({
             // FIN-TAHWEESH-01 (T-09): internal set-aside moves. Paired legs
             // (source EXPENSE + tahweesh INCOME) sharing meta.transferId.
             // Aggregations treat these as relocation, never revenue/expense.
-            'TahweeshTransfer'],
+            'TahweeshTransfer',
+            // FIN-REV-01 (T-REV): compensating reversal of another ledger row.
+            // The original row is KEPT (marked isReversed); the reversal is a
+            // visible counter-entry that flips the type and restores states.
+            'Reversal'],
         default: 'Manual'
     },
     referenceId: {
@@ -71,6 +75,35 @@ const TreasuryTransactionSchema = new mongoose.Schema({
     meta: {
         type: mongoose.Schema.Types.Mixed,
         default: {}
+    },
+    // FIN-REV-01 (T-REV): compensating-reversal linkage. `reversalOf` is set
+    // ONLY on the Reversal row (no default — sparse unique indexes treat an
+    // explicit null as a value, so a default of null would collide on the
+    // second ordinary row); `isReversed` is set on the original to keep its
+    // history while marking it as voided. The partial unique index on
+    // `reversalOf` is the replay guard — a row can be reversed exactly once.
+    reversalOf: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'TreasuryTransaction'
+    },
+    isReversed: {
+        type: Boolean,
+        default: false,
+        index: true
+    },
+    reason: {
+        type: String,
+        maxlength: 500,
+        default: ''
+    },
+    reversedAt: {
+        type: Date,
+        default: null
+    },
+    reversedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
     }
 }, { timestamps: true });
 
@@ -83,7 +116,21 @@ TreasuryTransactionSchema.index({ method: 1, date: -1 });
 // FIN-RPT-01 (number report): per-number movement queries always scope by
 // method + date and group/filter on the trimmed sourceNumber.
 TreasuryTransactionSchema.index({ method: 1, sourceNumber: 1, date: -1 });
+// FIN-REV-01 (T-REV): replay guard — one Reversal row per original.
+TreasuryTransactionSchema.index({ reversalOf: 1 }, { unique: true, sparse: true });
 
-export default mongoose.models.TreasuryTransaction || mongoose.model('TreasuryTransaction', TreasuryTransactionSchema);
+export default (() => {
+    const TreasuryTransaction = mongoose.models.TreasuryTransaction || mongoose.model('TreasuryTransaction', TreasuryTransactionSchema);
+    // FIN-REV-01 (T-REV): `referenceId` is refPath('referenceType'), and
+    // Mongoose only resolves REGISTERED model names. Any Reversal row that
+    // still carries a referenceId (e.g. legacy rows created before the field
+    // was dropped) would otherwise throw MissingSchemaError for model
+    // "Reversal" on every ledger populate. Register a surrogate bound to the
+    // SAME collection, mirroring the UnifiedCollection surrogate import above.
+    if (!mongoose.models.Reversal) {
+        mongoose.model('Reversal', TreasuryTransactionSchema, TreasuryTransaction.collection.name);
+    }
+    return TreasuryTransaction;
+})();
 
 
