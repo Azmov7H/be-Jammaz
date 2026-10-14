@@ -469,9 +469,10 @@ export const removeCustomPriceSchema = z.object({
 // Physical inventory
 // ---------------------------------------------------------------------------
 export const physicalInventoryCreateSchema = z.object({
-    location: z.enum(['warehouse', 'shop', 'both']),
+    location: z.enum(['warehouse', 'shop', 'both', 'primary', 'secondary']),
     category: z.string().max(100).nullish(),
     isBlind: z.coerce.boolean().optional().default(false),
+    warehouseId: idField.optional().nullable(),
 });
 
 export const physicalInventoryUpdateSchema = z.object({
@@ -481,6 +482,7 @@ export const physicalInventoryUpdateSchema = z.object({
         reason: z.string().max(500).optional(),
         justification: z.string().max(2000).optional(),
         justificationReason: z.enum(['damage', 'expired', 'theft', 'data_error', 'other']).nullish(),
+        warehouseId: idField.optional().nullable(),
     })).min(1).max(1000),
     notes: z.string().max(2000).optional(),
 });
