@@ -31,6 +31,7 @@ import exportRoutes from './routes/exportRoutes.js';
 import tahweeshRoutes from './routes/tahweeshRoutes.js';
 import documentRoutes from './routes/documentRoutes.js';
 import aliasRoutes from './routes/aliasRoutes.js';
+import warehouseRoutes from './routes/warehouseRoutes.js';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
@@ -146,6 +147,15 @@ const startServer = async () => {
     try {
         await dbConnect();
 
+        // WH-01: guarantee the primary warehouse exists (idempotent).
+        // Failure here must not prevent the API from booting.
+        try {
+            const { WarehouseService } = await import('./services/warehouseService.js');
+            await WarehouseService.ensurePrimaryWarehouse();
+        } catch (seedErr) {
+            logger.error('⚠️  Primary warehouse bootstrap failed:', seedErr.message);
+        }
+
         app.listen(PORT, '0.0.0.0', () => {
             logger.info(`✅ Server is running on http://127.0.0.1:${PORT}`);
         });
@@ -190,6 +200,7 @@ app.use('/api/docs', docsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/parties', partyRoutes);
 app.use('/api/tahweesh', tahweeshRoutes);
+app.use('/api/warehouses', warehouseRoutes);
 app.use('/api/export', heavyLimiter, exportRoutes);
 // DOC-ENG-004: document engine — read-only financial document surface.
 // heavyLimiter applies: every document generation hits the DB at minimum,

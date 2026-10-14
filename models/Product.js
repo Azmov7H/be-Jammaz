@@ -47,6 +47,17 @@ const ProductSchema = new mongoose.Schema({
     warehouseQty: { type: Number, default: 0, min: 0 },
     shopQty: { type: Number, default: 0, min: 0 },
 
+    // Per-warehouse stock slots (additive; empty by default → zero impact on legacy behavior)
+    warehouseStocks: [
+        {
+            warehouseId: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'Warehouse'
+            },
+            qty: { type: Number, min: 0, default: 0 }
+        }
+    ],
+
     // Handover / Initial state
     openingWarehouseQty: { type: Number, default: 0 },
     openingShopQty: { type: Number, default: 0 },
@@ -68,9 +79,10 @@ ProductSchema.index({ stockQty: 1 });
 ProductSchema.index({ warehouseQty: 1, shopQty: 1 }); // Optimized for quantity checks
 ProductSchema.index({ createdAt: -1 });
 
-// Middleware to sync stockQty
+// Middleware to sync stockQty (includes per-warehouse slots; empty array = legacy behavior)
 ProductSchema.pre('save', function () {
-    this.stockQty = (this.warehouseQty || 0) + (this.shopQty || 0);
+    const slotTotals = (this.warehouseStocks || []).reduce((sum, s) => sum + (s.qty || 0), 0);
+    this.stockQty = (this.warehouseQty || 0) + (this.shopQty || 0) + slotTotals;
 });
 
 export default mongoose.models.Product || mongoose.model('Product', ProductSchema);

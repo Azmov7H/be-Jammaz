@@ -9,6 +9,110 @@ import { toIdString } from '../utils/idUtils.js';
 import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
 /**
+ * Multi-warehouse helpers (WH-05).
+ *
+ * A missing/blank warehouseId means the PRIMARY warehouse (legacy semantics):
+ * its stock lives in Product.warehouseQty. Any concrete warehouseId targets the
+ * additive Product.warehouseStocks slot array. Slot mutations use guarded
+ * atomic operators so availability is enforced by the database (T-DB-05).
+ */
+export const isPrimaryWarehouse = (warehouseId) =>
+    warehouseId === null || warehouseId === undefined || warehouseId === '' || String(warehouseId) === 'null';
+
+/**
+ * Build a Mongo update doc from `{inc, set}` option objects (T-DB-05).
+ */
+function buildUpdate(inc, set) {
+    const update = {};
+    if (inc && Object.keys(inc).length) update.$inc = inc;
+    if (set && Object.keys(set).length) update.$set = set;
+    return update;
+}
+
+/**
+ * Atomically credit `qty` into a warehouse. Creates the slot when absent.
+ * @returns {Promise<object>} mongoose update result
+ */
+async function creditWarehouse(productId, warehouseId, qty, session, { inc = {}, set = {} } = {}) {
+    if (isPrimaryWarehouse(warehouseId)) {
+        return Product.updateOne(
+            { _id: productId },
+            buildUpdate({ warehouseQty: qty, stockQty: qty, ...inc }, set),
+            { session }
+        );
+    }
+
+    const slotUpdate = buildUpdate({ 'warehouseStocks.$.qty': qty, stockQty: qty, ...inc }, set);
+    const res = await Product.updateOne(
+        { _id: productId, 'warehouseStocks.warehouseId': warehouseId },
+        slotUpdate,
+        { session }
+    );
+    if (res.matchedCount > 0) return res;
+
+    // Slot does not exist yet — create it, then credit.
+    await Product.updateOne(
+        { _id: productId, 'warehouseStocks.warehouseId': { $ne: warehouseId } },
+        { $push: { warehouseStocks: { warehouseId, qty: 0 } } },
+        { session }
+    );
+    return Product.updateOne(
+        { _id: productId, 'warehouseStocks.warehouseId': warehouseId },
+        slotUpdate,
+        { session }
+    );
+}
+
+/**
+ * Debit `qty` from a warehouse with a database-enforced availability guard.
+ * @returns {Promise<object|null>} updated product, or null when insufficient
+ */
+async function debitWarehouse(productId, warehouseId, qty, session, { inc = {}, set = {}, syncStockQty = true } = {}) {
+    if (isPrimaryWarehouse(warehouseId)) {
+        return Product.findOneAndUpdate(
+            { _id: productId, warehouseQty: { $gte: qty } },
+            buildUpdate({ warehouseQty: -qty, ...(syncStockQty ? { stockQty: -qty } : {}), ...inc }, set),
+            { new: true, session }
+        );
+    }
+    return Product.findOneAndUpdate(
+        { _id: productId, warehouseStocks: { $elemMatch: { warehouseId, qty: { $gte: qty } } } },
+        buildUpdate({ 'warehouseStocks.$.qty': -qty, ...(syncStockQty ? { stockQty: -qty } : {}), ...inc }, set),
+        { new: true, session }
+    );
+}
+
+/**
+ * Absolutely set a warehouse's stock to `newQty` (stock adjustments / counts).
+ * The caller is responsible for any `stockQty` delta via `inc`.
+ */
+async function setWarehouseQty(productId, warehouseId, newQty, session, { inc = {}, set = {} } = {}) {
+    if (isPrimaryWarehouse(warehouseId)) {
+        return Product.updateOne(
+            { _id: productId },
+            buildUpdate(inc, { warehouseQty: newQty, ...set }),
+            { session }
+        );
+    }
+    const res = await Product.updateOne(
+        { _id: productId, 'warehouseStocks.warehouseId': warehouseId },
+        buildUpdate(inc, { 'warehouseStocks.$.qty': newQty, ...set }),
+        { session }
+    );
+    if (res.matchedCount > 0) return res;
+    await Product.updateOne(
+        { _id: productId },
+        {
+            $push: { warehouseStocks: { warehouseId, qty: newQty } },
+            ...(Object.keys(inc).length ? { $inc: inc } : {}),
+            ...(Object.keys(set).length ? { $set: set } : {})
+        },
+        { session }
+    );
+    return res;
+}
+
+/**
  * Stock Management Service
  * Handles all stock operations with proper validation and logging
  */
@@ -39,18 +143,36 @@ export const StockService = {
 
             const source = item.source || 'shop';
             const qty = Number(item.qty);
+            const warehouseId = item.warehouseId;
 
-            const guardField = source === 'warehouse' ? 'warehouseQty' : 'shopQty';
-            bulkOps.push({
-                updateOne: {
-                    filter: { _id: product._id, [guardField]: { $gte: qty } },
-                    update: {
-                        $inc: source === 'warehouse'
-                            ? { warehouseQty: -qty, stockQty: -qty }
-                            : { shopQty: -qty, stockQty: -qty }
-                    }
-                }
-            });
+            let filter;
+            let update;
+            let compensateFilter;
+            let compensateUpdate;
+            let label;
+
+            if (source === 'warehouse' && !isPrimaryWarehouse(warehouseId)) {
+                // Non-primary warehouse slot.
+                filter = { _id: product._id, warehouseStocks: { $elemMatch: { warehouseId, qty: { $gte: qty } } } };
+                update = { $inc: { 'warehouseStocks.$.qty': -qty, stockQty: -qty } };
+                compensateFilter = { _id: product._id, 'warehouseStocks.warehouseId': warehouseId };
+                compensateUpdate = { $inc: { 'warehouseStocks.$.qty': qty, stockQty: qty } };
+                label = 'المخزن';
+            } else if (source === 'warehouse') {
+                filter = { _id: product._id, warehouseQty: { $gte: qty } };
+                update = { $inc: { warehouseQty: -qty, stockQty: -qty } };
+                compensateFilter = { _id: product._id };
+                compensateUpdate = { $inc: { warehouseQty: qty, stockQty: qty } };
+                label = 'المخزن';
+            } else {
+                filter = { _id: product._id, shopQty: { $gte: qty } };
+                update = { $inc: { shopQty: -qty, stockQty: -qty } };
+                compensateFilter = { _id: product._id };
+                compensateUpdate = { $inc: { shopQty: qty, stockQty: qty } };
+                label = 'المتجر';
+            }
+
+            bulkOps.push({ updateOne: { filter, update } });
 
             movements.push({
                 productId: product._id,
@@ -58,10 +180,11 @@ export const StockService = {
                 qty: qty,
                 note: `بيع من ${source === 'warehouse' ? 'المخزن' : 'المحل'} - فاتورة #${invoiceId}`,
                 refId: invoiceId,
+                warehouseId: source === 'warehouse' ? (warehouseId || undefined) : undefined,
                 createdBy: userId
             });
 
-            decrements.push({ productId: product._id, guardField, qty, name: product.name });
+            decrements.push({ productId: product._id, compensateFilter, compensateUpdate, name: product.name, label });
         }
 
         if (bulkOps.length > 0) {
@@ -70,18 +193,13 @@ export const StockService = {
                 // Compensate successful decrements, then fail loudly.
                 if (!session && res.modifiedCount > 0) {
                     await Product.bulkWrite(decrements.slice(0, res.modifiedCount).map(d => ({
-                        updateOne: {
-                            filter: { _id: d.productId },
-                            update: { $inc: d.guardField === 'warehouseQty'
-                                ? { warehouseQty: d.qty, stockQty: d.qty }
-                                : { shopQty: d.qty, stockQty: d.qty } }
-                        }
+                        updateOne: { filter: d.compensateFilter, update: d.compensateUpdate }
                     })));
                 }
                 const failed = decrements[res.modifiedCount];
                 throw new BadRequestError(
                     failed
-                        ? `الكمية غير كافية في ${failed.guardField === 'warehouseQty' ? 'المخزن' : 'المتجر'}: ${failed.name}`
+                        ? `الكمية غير كافية في ${failed.label}: ${failed.name}`
                         : 'فشل تحديث المخزون'
                 );
             }
@@ -119,6 +237,7 @@ export const StockService = {
         const productMap = new Map(products.map(p => [toIdString(p), p]));
 
         const bulkOps = [];
+        const slotCredits = [];
         const movements = [];
 
         for (const item of items) {
@@ -141,17 +260,28 @@ export const StockService = {
             // the session read — inside a transaction concurrent receipts are
             // serialized, outside it the window is a single statement.
             const finalAvg = parseFloat(newAvgCost.toFixed(2));
-            bulkOps.push({
-                updateOne: {
-                    filter: { _id: product._id },
-                    update: {
-                        $inc: { warehouseQty: newQty, stockQty: newQty },
-                        $set: { buyPrice: finalAvg }
+            const warehouseId = item.warehouseId;
+
+            if (isPrimaryWarehouse(warehouseId)) {
+                bulkOps.push({
+                    updateOne: {
+                        filter: { _id: product._id },
+                        update: {
+                            $inc: { warehouseQty: newQty, stockQty: newQty },
+                            $set: { buyPrice: finalAvg }
+                        }
                     }
-                }
-            });
-            product.warehouseQty = (product.warehouseQty || 0) + newQty;
-            product.stockQty = (product.warehouseQty || 0) + (product.shopQty || 0);
+                });
+                product.warehouseQty = (product.warehouseQty || 0) + newQty;
+                product.stockQty = (product.warehouseQty || 0) + (product.shopQty || 0);
+            } else {
+                // Non-primary warehouse slot: atomic credit against the slot.
+                slotCredits.push({ productId: product._id, warehouseId, qty: newQty, buyPrice: finalAvg });
+                const slot = (product.warehouseStocks || []).find(s => String(s.warehouseId) === String(warehouseId));
+                if (slot) slot.qty = (slot.qty || 0) + newQty;
+                else product.warehouseStocks.push({ warehouseId, qty: newQty });
+                product.stockQty = (product.stockQty || 0) + newQty;
+            }
             product.buyPrice = finalAvg;
 
             // Prepare movement log
@@ -161,6 +291,7 @@ export const StockService = {
                 qty: newQty,
                 note: `شراء - أمر #${poId} (Cost: ${newCost}, NewAvg: ${product.buyPrice})`,
                 refId: poId,
+                warehouseId: warehouseId || undefined,
                 createdBy: userId,
                 snapshot: {
                     warehouseQty: product.warehouseQty,
@@ -174,6 +305,13 @@ export const StockService = {
         // 4. Execute bulk updates
         if (bulkOps.length > 0) {
             await Product.bulkWrite(bulkOps, { session });
+        }
+        for (const credit of slotCredits) {
+            await creditWarehouse(credit.productId, credit.warehouseId, credit.qty, session, {
+                set: { buyPrice: credit.buyPrice }
+            });
+        }
+        if (movements.length > 0) {
             await StockMovement.insertMany(movements, { session });
         }
 
@@ -182,23 +320,27 @@ export const StockService = {
 
     /**
      * Transfer stock from warehouse to shop
+     * @param {string} [warehouseId] optional non-primary warehouse source
      */
-    async transferToShop(productId, quantity, userId, note = '', session = null) {
+    async transferToShop(productId, quantity, userId, note = '', session = null, warehouseId = null) {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
             throw new NotFoundError('المنتج غير موجود');
         }
 
-        // T-DB-05: conditional atomic transfer
-        const updated = await Product.findOneAndUpdate(
-            { _id: productId, warehouseQty: { $gte: quantity } },
-            { $inc: { warehouseQty: -quantity, shopQty: quantity } },
-            { new: true, session }
-        );
+        // T-DB-05: conditional atomic transfer (DB enforces availability).
+        // Moving within a product does not change total stockQty.
+        const updated = await debitWarehouse(productId, warehouseId, quantity, session, {
+            inc: { shopQty: quantity },
+            syncStockQty: false
+        });
         if (!updated) {
+            const available = isPrimaryWarehouse(warehouseId)
+                ? product.warehouseQty
+                : ((product.warehouseStocks || []).find(s => String(s.warehouseId) === String(warehouseId))?.qty || 0);
             throw new BadRequestError(
-                `كمية غير كافية في المخزن. المتوفر: ${product.warehouseQty}, المطلوب: ${quantity}`
+                `كمية غير كافية في المخزن. المتوفر: ${available}, المطلوب: ${quantity}`
             );
         }
 
@@ -208,6 +350,7 @@ export const StockService = {
             type: 'TRANSFER_TO_SHOP',
             qty: quantity,
             note: note || 'تحويل من المخزن إلى المحل',
+            warehouseId: warehouseId || undefined,
             createdBy: userId,
             snapshot: {
                 warehouseQty: updated.warehouseQty,
@@ -221,21 +364,32 @@ export const StockService = {
 
     /**
      * Transfer stock from shop to warehouse
+     * @param {string} [warehouseId] optional non-primary warehouse destination
      */
-    async transferToWarehouse(productId, quantity, userId, note = '', session = null) {
-        const product = await Product.findById(productId).session(session);
-
-        if (!product) {
-            throw new NotFoundError('المنتج غير موجود');
+    async transferToWarehouse(productId, quantity, userId, note = '', session = null, warehouseId = null) {
+        let updated;
+        if (isPrimaryWarehouse(warehouseId)) {
+            // Single atomic sub-bucket move (stockQty unchanged).
+            updated = await Product.findOneAndUpdate(
+                { _id: productId, shopQty: { $gte: quantity } },
+                { $inc: { shopQty: -quantity, warehouseQty: quantity } },
+                { new: true, session }
+            );
+        } else {
+            // Guard shop availability atomically, then credit the slot.
+            const debited = await Product.findOneAndUpdate(
+                { _id: productId, shopQty: { $gte: quantity } },
+                { $inc: { shopQty: -quantity, stockQty: -quantity } },
+                { new: true, session }
+            );
+            if (debited) {
+                await creditWarehouse(productId, warehouseId, quantity, session);
+                updated = await Product.findById(productId).session(session);
+            }
         }
-
-        // T-DB-05: conditional atomic transfer
-        const updated = await Product.findOneAndUpdate(
-            { _id: productId, shopQty: { $gte: quantity } },
-            { $inc: { shopQty: -quantity, warehouseQty: quantity } },
-            { new: true, session }
-        );
         if (!updated) {
+            const product = await Product.findById(productId).session(session);
+            if (!product) throw new NotFoundError('المنتج غير موجود');
             throw new BadRequestError(
                 `كمية غير كافية في المحل. المتوفر: ${product.shopQty}, المطلوب: ${quantity}`
             );
@@ -247,6 +401,7 @@ export const StockService = {
             type: 'TRANSFER_TO_WAREHOUSE',
             qty: quantity,
             note: note || 'تحويل من المحل إلى المخزن',
+            warehouseId: warehouseId || undefined,
             createdBy: userId,
             snapshot: {
                 warehouseQty: updated.warehouseQty,
@@ -256,6 +411,48 @@ export const StockService = {
         const movement = movementDocs[0];
 
         return { product: updated, movement };
+    },
+
+    /**
+     * Transfer stock between two warehouses (either side may be primary).
+     * @param {string} toWarehouseId destination warehouse id (required, non-primary or primary)
+     */
+    async transferBetweenWarehouses(productId, quantity, userId, fromWarehouseId, toWarehouseId, note = '', session = null) {
+        const product = await Product.findById(productId).session(session);
+        if (!product) throw new NotFoundError('المنتج غير موجود');
+
+        if (String(fromWarehouseId || '') === String(toWarehouseId || '') &&
+            isPrimaryWarehouse(fromWarehouseId) === isPrimaryWarehouse(toWarehouseId)) {
+            throw new BadRequestError('لا يمكن التحويل إلى نفس المخزن');
+        }
+
+        const debited = await debitWarehouse(productId, fromWarehouseId, quantity, session);
+        if (!debited) {
+            const available = isPrimaryWarehouse(fromWarehouseId)
+                ? product.warehouseQty
+                : ((product.warehouseStocks || []).find(s => String(s.warehouseId) === String(fromWarehouseId))?.qty || 0);
+            throw new BadRequestError(
+                `كمية غير كافية في المخزن المصدر. المتوفر: ${available}, المطلوب: ${quantity}`
+            );
+        }
+        await creditWarehouse(productId, toWarehouseId, quantity, session);
+
+        const updated = await Product.findById(productId).session(session);
+
+        const movementDocs = await StockMovement.create([{
+            productId,
+            type: 'TRANSFER',
+            qty: quantity,
+            note: note || 'تحويل بين المخازن',
+            fromWarehouseId: fromWarehouseId || undefined,
+            toWarehouseId: toWarehouseId || undefined,
+            createdBy: userId,
+            snapshot: {
+                warehouseQty: updated ? updated.warehouseQty : debited.warehouseQty,
+                shopQty: updated ? updated.shopQty : debited.shopQty
+            }
+        }], { session });
+        return { product: updated, movement: movementDocs[0] };
     },
 
     /**
@@ -335,7 +532,7 @@ export const StockService = {
      * { productId, location: 'shop'|'warehouse', newQty, reason }).
      * Keeps the other location untouched and delegates to adjustStock.
      */
-    async adjustStockLocation(productId, location, newQty, reason, userId, session = null) {
+    async adjustStockLocation(productId, location, newQty, reason, userId, session = null, warehouseId = null) {
         const product = await Product.findById(productId).session(session);
 
         if (!product) {
@@ -344,6 +541,34 @@ export const StockService = {
 
         if (location !== 'shop' && location !== 'warehouse') {
             throw new BadRequestError('الموقع يجب أن يكون shop أو warehouse');
+        }
+
+        // Non-primary warehouse slot adjustment.
+        if (location === 'warehouse' && !isPrimaryWarehouse(warehouseId)) {
+            const slot = (product.warehouseStocks || []).find(s => String(s.warehouseId) === String(warehouseId));
+            const oldQty = slot ? (slot.qty || 0) : 0;
+            const qty = Number(newQty);
+            if (qty === oldQty) {
+                throw new BadRequestError('لا يوجد تغيير في الكمية');
+            }
+            const diff = qty - oldQty;
+            await setWarehouseQty(productId, warehouseId, qty, session, { inc: { stockQty: diff } });
+            const updated = await Product.findById(productId).session(session);
+
+            const movementDocs = await StockMovement.create([{
+                productId,
+                type: 'ADJUST',
+                qty: Math.abs(diff),
+                note: `تصحيح جرد: ${reason}. مخزن: ${oldQty}→${qty}`,
+                warehouseId: warehouseId || undefined,
+                createdBy: userId,
+                snapshot: {
+                    warehouseQty: updated ? updated.warehouseQty : product.warehouseQty,
+                    shopQty: updated ? updated.shopQty : product.shopQty
+                }
+            }], { session });
+
+            return { product: updated, movement: movementDocs[0], warehouseDiff: diff, shopDiff: 0 };
         }
 
         const newWarehouseQty = location === 'warehouse' ? newQty : product.warehouseQty;
@@ -535,12 +760,52 @@ export const StockService = {
     /**
      * Generic Move Stock (Consolidates all simple movements)
      */
-    async moveStock({ productId, qty, type, userId, note, refId, isSystem = false }, session = null) {
+    async moveStock({ productId, qty, type, userId, note, refId, isSystem = false, warehouseId = null }, session = null) {
         const quantity = Math.abs(Number(qty));
         if (quantity === 0) throw new BadRequestError('Quantity must be greater than 0');
 
         const product = await Product.findById(productId).session(session);
         if (!product) throw new NotFoundError('Product not found');
+
+        // Multi-warehouse (non-primary) paths route through the slot helpers.
+        if (!isPrimaryWarehouse(warehouseId)) {
+            if (type === 'IN' || type === 'ADJUST') {
+                await creditWarehouse(productId, warehouseId, quantity, session);
+            } else if (type === 'OUT') {
+                const debited = await debitWarehouse(productId, warehouseId, quantity, session);
+                if (!debited) throw new BadRequestError(`Insufficient stock for ${type}. Requested: ${quantity}`);
+            } else if (type === 'TRANSFER_TO_SHOP') {
+                const debited = await debitWarehouse(productId, warehouseId, quantity, session, { inc: { shopQty: quantity }, syncStockQty: false });
+                if (!debited) throw new BadRequestError(`Insufficient stock for ${type}. Requested: ${quantity}`);
+            } else if (type === 'TRANSFER_TO_WAREHOUSE') {
+                const debited = await Product.findOneAndUpdate(
+                    { _id: productId, shopQty: { $gte: quantity } },
+                    { $inc: { shopQty: -quantity, stockQty: -quantity } },
+                    { new: true, session }
+                );
+                if (!debited) throw new BadRequestError(`Insufficient stock for ${type}. Requested: ${quantity}`);
+                await creditWarehouse(productId, warehouseId, quantity, session);
+            } else {
+                throw new BadRequestError('Invalid movement type');
+            }
+
+            const slotProduct = await Product.findById(productId).session(session);
+            await StockMovement.create([{
+                productId,
+                type,
+                qty: quantity,
+                note: note || `Manual Move: ${type}`,
+                refId,
+                warehouseId: warehouseId || undefined,
+                createdBy: userId,
+                date: new Date(),
+                snapshot: {
+                    warehouseQty: slotProduct.warehouseQty,
+                    shopQty: slotProduct.shopQty
+                }
+            }], { session });
+            return slotProduct;
+        }
 
         let updateQuery;
         let guard = null; // T-DB-05: conditional decrement guard
@@ -630,6 +895,22 @@ export const StockService = {
 
             const quantity = Math.abs(Number(item.qty));
             const activeType = item.type || type;
+
+            // Non-primary warehouse items are handled individually (slot creation,
+            // guards) via moveStock; primary items stay in the bulk fast path.
+            if (item.warehouseId && !isPrimaryWarehouse(item.warehouseId)) {
+                const moved = await this.moveStock({
+                    productId: item.productId,
+                    qty: quantity,
+                    type: activeType,
+                    userId,
+                    note: item.note,
+                    warehouseId: item.warehouseId
+                }, session);
+                results.push(moved);
+                continue;
+            }
+
             let update = {};
             let guardField = null; // T-DB-05: guarded decrements
 

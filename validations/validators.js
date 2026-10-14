@@ -179,11 +179,13 @@ export const stockMoveSchema = z.object({
     type: z.enum(['IN', 'OUT', 'SALE', 'TRANSFER_TO_SHOP', 'TRANSFER_TO_WAREHOUSE', 'ADJUST']),
     note: z.string().max(500).optional(),
     refId: idField.optional(),
+    warehouseId: idField.optional().nullable(),
     items: z.array(z.object({
         productId: idField,
         qty,
         type: z.string().max(30).optional(),
-        note: z.string().max(500).optional()
+        note: z.string().max(500).optional(),
+        warehouseId: idField.optional().nullable()
     })).max(500).optional()
 }).refine(data => (data.items && data.items.length > 0) || (data.productId && data.qty), {
     message: "Must provide either 'items' array or 'productId' and 'qty'"
@@ -196,6 +198,11 @@ export const stockTransferSchema = z.object({
     qty,
     quantity: qty.optional(), // legacy alias accepted by route
     note: z.string().max(500).optional(),
+    // Multi-warehouse: the non-primary warehouse on the warehouse side of the
+    // move, or explicit endpoints for an inter-warehouse transfer.
+    warehouseId: idField.optional().nullable(),
+    fromWarehouseId: idField.optional().nullable(),
+    toWarehouseId: idField.optional().nullable()
 }).refine(data => data.from !== data.to, {
     message: 'لا يمكن التحويل لنفس الموقع'
 });
@@ -205,6 +212,7 @@ export const stockAdjustSchema = z.object({
     location: z.enum(['shop', 'warehouse']),
     newQty: z.coerce.number().min(0).max(1e6),
     reason: z.string().min(2, 'يجب ذكر سبب التعديل').max(500),
+    warehouseId: idField.optional().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -263,6 +271,7 @@ export const invoiceSchema = z.object({
         unitPrice: money,
         isService: z.boolean().optional(),
         source: z.enum(['shop', 'warehouse']).default('shop'),
+        warehouseId: idField.optional().nullable(),
         buyPrice: money.optional()
     })).min(1, 'السلة فارغة').max(500),
     customerId: idField.optional().nullable(),
@@ -301,7 +310,8 @@ export const purchaseOrderSchema = z.object({
     items: z.array(z.object({
         productId: idField,
         quantity: qty,
-        costPrice: positiveMoney
+        costPrice: positiveMoney,
+        warehouseId: idField.optional().nullable()
     })).min(1, 'قائمة الأصناف فارغة').max(500),
     notes: z.string().max(2000).optional(),
     expectedDate: dateField,
@@ -327,7 +337,8 @@ export const poReceiveSchema = z.object({
     receivedItems: z.array(z.object({
         productId: idField,
         quantity: qty,
-        costPrice: positiveMoney
+        costPrice: positiveMoney,
+        warehouseId: idField.optional().nullable()
     }).partial({ productId: true, quantity: true, costPrice: true })).max(500).optional()
 }).loose();
 
@@ -476,6 +487,21 @@ export const physicalInventoryUpdateSchema = z.object({
 
 export const unlockSchema = z.object({
     password: z.string().min(1, 'كلمة المرور مطلوبة').max(128),
+});
+
+export const warehouseSchema = z.object({
+    name: z.string().min(1, 'اسم المخزن مطلوب').max(200),
+    code: z.string().min(1, 'كود المخزن مطلوب').max(50),
+    address: z.string().max(500).optional(),
+    isPrimary: z.boolean().optional(),
+    isActive: z.boolean().optional()
+});
+
+export const updateWarehouseSchema = warehouseSchema.partial();
+
+export const warehouseDeleteSchema = z.object({
+    destinationWarehouseId: idField.optional(),
+    confirmed: z.boolean().optional()
 });
 
 // ---------------------------------------------------------------------------
