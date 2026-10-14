@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { logger } from './lib/logger.js';
 import dbConnect from './lib/db.js';
 import express from 'express';
+import cron from 'node-cron';
 import compression from 'compression';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -155,6 +156,18 @@ const startServer = async () => {
         } catch (seedErr) {
             logger.error('⚠️  Primary warehouse bootstrap failed:', seedErr.message);
         }
+
+        // Start notification sync cron job (every 5 minutes)
+        cron.schedule('*/5 * * * *', async () => {
+            try {
+                const { NotificationService } = await import('./services/notificationService.js');
+                await NotificationService.syncAllAlerts();
+                logger.info('✅ Notification sync completed');
+            } catch (err) {
+                logger.error('❌ Notification sync failed:', err.message);
+            }
+        });
+        logger.info('⏰ Notification sync scheduler started (every 5 minutes)');
 
         app.listen(PORT, '0.0.0.0', () => {
             logger.info(`✅ Server is running on http://127.0.0.1:${PORT}`);

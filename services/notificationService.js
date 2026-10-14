@@ -259,7 +259,8 @@ export class NotificationService {
             isActive: true,
             $or: [
                 { shopQty: { $lte: threshold } },
-                { warehouseQty: { $lte: threshold } }
+                { warehouseQty: { $lte: threshold } },
+                { 'warehouseStocks.qty': { $lte: threshold } }
             ]
         });
 
@@ -290,6 +291,24 @@ export class NotificationService {
                     link: `/products/${product._id}`,
                     metadata: { productId: product._id, location: 'warehouse' }
                 });
+            }
+            // Non-primary warehouse slots low stock
+            if (product.warehouseStocks && product.warehouseStocks.length > 0) {
+                for (const slot of product.warehouseStocks) {
+                    const minLevel = product.minLevel || threshold;
+                    if ((slot.qty || 0) <= minLevel) {
+                        specs.push({
+                            title: `نقص في المخزن الفرعي: ${product.name}`,
+                            message: `الكمية في المخزن الفرعي وصلت للحد الأدنى (${slot.qty || 0}).`,
+                            type: 'business',
+                            severity: 'warning',
+                            source: 'InventoryService',
+                            targetRole: 'manager',
+                            link: `/products/${product._id}`,
+                            metadata: { productId: product._id, location: 'warehouse', warehouseId: String(slot.warehouseId) }
+                        });
+                    }
+                }
             }
         }
         await this.createMany(specs);
