@@ -7,6 +7,9 @@ const PurchaseOrderSchema = new mongoose.Schema({
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
         quantity: { type: Number, required: true },
         costPrice: { type: Number, required: true }, // Cost at time of order
+        // Multi-warehouse: destination warehouse on receipt. Absent/null means
+        // the primary warehouse.
+        warehouseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse' },
         receivedQty: { type: Number, default: 0 }
     }],
     status: {

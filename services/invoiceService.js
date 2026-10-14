@@ -184,6 +184,7 @@ async create(data, userId) {
                 qty: item.qty,
                 unitPrice,
                 source: item.source || 'shop',
+                warehouseId: item.source === 'warehouse' ? (item.warehouseId || undefined) : undefined,
                 isService,
                 total: itemTotal,
                 costPrice,

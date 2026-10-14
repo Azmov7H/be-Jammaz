@@ -29,17 +29,23 @@ router.get('/status', routeHandler(async () => {
 }));
 
 router.post('/transfer', validate(stockTransferSchema),  roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
-    const { productId, from, to, qty, quantity, note } = req.body;
+    const { productId, from, to, qty, quantity, note, warehouseId, fromWarehouseId, toWarehouseId } = req.body;
     const amount = qty ?? quantity;
-    if (from === 'warehouse' && to === 'shop') {
-        return await StockService.transferToShop(productId, amount, req.user._id, note);
+    // Explicit endpoints → inter-warehouse transfer.
+    if (fromWarehouseId && toWarehouseId) {
+        return await StockService.transferBetweenWarehouses(
+            productId, amount, req.user._id, fromWarehouseId, toWarehouseId, note
+        );
     }
-    return await StockService.transferToWarehouse(productId, amount, req.user._id, note);
+    if (from === 'warehouse' && to === 'shop') {
+        return await StockService.transferToShop(productId, amount, req.user._id, note, null, warehouseId);
+    }
+    return await StockService.transferToWarehouse(productId, amount, req.user._id, note, null, warehouseId);
 }));
 
 // Alias for stock movements for frontend compatibility
 router.post('/move', validate(stockMoveSchema),  roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
-    const { items, productId, qty, type, note, refId } = req.body;
+    const { items, productId, qty, type, note, refId, warehouseId } = req.body;
 
     if (items && Array.isArray(items) && items.length > 0) {
         // Bulk movement
@@ -57,13 +63,14 @@ router.post('/move', validate(stockMoveSchema),  roleMiddleware(['warehouse', 'o
         type: type || (items && items[0]?.type),
         userId: req.user._id,
         note: note || (items && items[0]?.note),
-        refId
+        refId,
+        warehouseId: warehouseId || (items && items[0]?.warehouseId)
     });
 }));
 
 router.post('/adjust', roleMiddleware(['owner', 'manager']), validate(stockAdjustSchema), routeHandler(async (req) => {
-    const { productId, location, newQty, reason } = req.body;
-    return await StockService.adjustStockLocation(productId, location, newQty, reason, req.user._id);
+    const { productId, location, newQty, reason, warehouseId } = req.body;
+    return await StockService.adjustStockLocation(productId, location, newQty, reason, req.user._id, null, warehouseId);
 }));
 
 export default router;

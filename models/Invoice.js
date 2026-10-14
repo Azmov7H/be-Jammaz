@@ -10,6 +10,9 @@ const InvoiceSchema = new mongoose.Schema({
         qty: { type: Number, required: true, min: 0 }, // T-DB-02
         unitPrice: { type: Number, required: true, min: 0 }, // T-DB-02
         source: { type: String, enum: ['shop', 'warehouse'], default: 'shop' },
+        // Multi-warehouse: the non-primary warehouse a warehouse-sourced line
+        // is drawn from. Absent/null means the primary warehouse.
+        warehouseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse' },
         isService: { type: Boolean, default: false }, // Service/custom items (no stock tracking)
         total: { type: Number, required: true, min: 0 }, // T-DB-02
         costPrice: { type: Number },
