@@ -31,8 +31,8 @@ router.get('/:id', validateParams(idParams), routeHandler(async (req) => {
 
 // Create new physical inventory count
 router.post('/', roleMiddleware(['owner', 'manager']), validate(physicalInventoryCreateSchema), routeHandler(async (req) => {
-    const { location, category, isBlind } = req.body;
-    return await PhysicalInventoryService.createCount(location, req.user._id, { category, isBlind });
+    const { location, category, isBlind, warehouseId } = req.body;
+    return await PhysicalInventoryService.createCount(location, req.user._id, { category, isBlind, warehouseId });
 }));
 
 // Update actual quantities

@@ -501,10 +501,12 @@ export const StockService = {
         const oldWarehouseQty = product.warehouseQty;
         const oldShopQty = product.shopQty;
 
-        // Set new quantities
+        // Set new quantities. stockQty must also include the additive per-warehouse
+        // slots so multi-warehouse totals are preserved (no-op when none exist).
+        const slotTotals = (product.warehouseStocks || []).reduce((sum, s) => sum + (s.qty || 0), 0);
         product.warehouseQty = newWarehouseQty;
         product.shopQty = newShopQty;
-        product.stockQty = newWarehouseQty + newShopQty;
+        product.stockQty = newWarehouseQty + newShopQty + slotTotals;
         await product.save({ session });
 
         const warehouseDiff = newWarehouseQty - oldWarehouseQty;
