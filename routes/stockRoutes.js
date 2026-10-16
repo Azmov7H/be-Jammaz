@@ -3,7 +3,7 @@ import { StockService } from '../services/stockService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
 import { validate } from '../lib/validate.js';
-import { stockTransferSchema, stockMoveSchema, stockAdjustSchema } from '../validations/index.js';
+import { stockTransferSchema, stockTransferBulkSchema, stockMoveSchema, stockAdjustSchema } from '../validations/index.js';
 
 const router = express.Router();
 
@@ -43,6 +43,16 @@ router.post('/transfer', validate(stockTransferSchema),  roleMiddleware(['wareho
         return await StockService.transferToShop(productId, amount, req.user._id, note, null, warehouseId);
     }
     return await StockService.transferToWarehouse(productId, amount, req.user._id, note, null, warehouseId);
+}));
+
+// Bulk inter-warehouse transfer: move many products between two warehouses in a
+// single atomic operation. Same warehouse-side rules as /transfer (a null id
+// means the PRIMARY warehouse).
+router.post('/transfer-bulk', validate(stockTransferBulkSchema), roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
+    const { items, note, fromWarehouseId, toWarehouseId } = req.body;
+    return await StockService.bulkTransferBetweenWarehouses(
+        items, req.user._id, fromWarehouseId ?? null, toWarehouseId ?? null, note
+    );
 }));
 
 // Alias for stock movements for frontend compatibility

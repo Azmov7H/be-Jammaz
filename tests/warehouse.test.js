@@ -609,3 +609,138 @@ describe('WH-09: inter-warehouse transfers (primary on either side)', () => {
         expect(res.status).toBe(400);
     });
 });
+
+describe('WH-10: bulk inter-warehouse transfers', () => {
+    it('moves multiple products between two non-primary warehouses in one request', async () => {
+        const { default: Product } = await import('../models/Product.js');
+        const { default: StockMovement } = await import('../models/StockMovement.js');
+
+        const from = await createWarehouse({ code: `BT-F-${Date.now()}` });
+        const to = await createWarehouse({ code: `BT-T-${Date.now()}` });
+        const p1 = await createProduct([{ warehouseId: from._id, qty: 10 }]);
+        const p2 = await createProduct([{ warehouseId: from._id, qty: 4 }]);
+
+        const res = await request.post('/api/stock/transfer-bulk').set('Cookie', ownerCookie).send({
+            fromWarehouseId: String(from._id),
+            toWarehouseId: String(to._id),
+            note: 'نقل دفعة',
+            items: [
+                { productId: String(p1._id), qty: 6 },
+                { productId: String(p2._id), qty: 3 },
+            ],
+        });
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+        expect(res.body.data.moved).toBe(2);
+
+        const f1 = await Product.findById(p1._id);
+        const f2 = await Product.findById(p2._id);
+        expect(f1.warehouseStocks.find((s) => String(s.warehouseId) === String(from._id)).qty).toBe(4);
+        expect(f1.warehouseStocks.find((s) => String(s.warehouseId) === String(to._id)).qty).toBe(6);
+        expect(f2.warehouseStocks.find((s) => String(s.warehouseId) === String(from._id)).qty).toBe(1);
+        expect(f2.warehouseStocks.find((s) => String(s.warehouseId) === String(to._id)).qty).toBe(3);
+        // stockQty is conserved across the move.
+        expect(f1.stockQty).toBe(10);
+        expect(f2.stockQty).toBe(4);
+
+        const movements = await StockMovement.find({ type: 'TRANSFER', fromWarehouseId: from._id }).sort({ createdAt: 1 });
+        expect(movements.length).toBe(2);
+        expect(movements.every((m) => String(m.toWarehouseId) === String(to._id))).toBe(true);
+    });
+
+    it('moves multiple products from the primary warehouse to a slot', async () => {
+        const { default: Product } = await import('../models/Product.js');
+
+        const wh = await createWarehouse({ code: `BT-P2N-${Date.now()}` });
+        const p1 = await createProduct([], { warehouseQty: 5, shopQty: 0 });
+        const p2 = await createProduct([], { warehouseQty: 8, shopQty: 0 });
+
+        const res = await request.post('/api/stock/transfer-bulk').set('Cookie', ownerCookie).send({
+            fromWarehouseId: null,
+            toWarehouseId: String(wh._id),
+            items: [
+                { productId: String(p1._id), qty: 2 },
+                { productId: String(p2._id), qty: 5 },
+            ],
+        });
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+
+        const f1 = await Product.findById(p1._id);
+        const f2 = await Product.findById(p2._id);
+        expect(f1.warehouseQty).toBe(3);
+        expect(f1.warehouseStocks.find((s) => String(s.warehouseId) === String(wh._id)).qty).toBe(2);
+        expect(f2.warehouseQty).toBe(3);
+        expect(f2.warehouseStocks.find((s) => String(s.warehouseId) === String(wh._id)).qty).toBe(5);
+    });
+
+    it('rolls back the whole batch when one product has insufficient stock', async () => {
+        const { default: Product } = await import('../models/Product.js');
+        const { default: StockMovement } = await import('../models/StockMovement.js');
+
+        const from = await createWarehouse({ code: `BT-RB-F-${Date.now()}` });
+        const to = await createWarehouse({ code: `BT-RB-T-${Date.now()}` });
+        const ok = await createProduct([{ warehouseId: from._id, qty: 10 }]);
+        const short = await createProduct([{ warehouseId: from._id, qty: 1 }]);
+
+        const before = await StockMovement.countDocuments({ type: 'TRANSFER' });
+        const res = await request.post('/api/stock/transfer-bulk').set('Cookie', ownerCookie).send({
+            fromWarehouseId: String(from._id),
+            toWarehouseId: String(to._id),
+            items: [
+                { productId: String(ok._id), qty: 5 },
+                { productId: String(short._id), qty: 99 },
+            ],
+        });
+        expect(res.status).toBe(400);
+
+        // Neither product may have moved, and no movement may have been logged.
+        const fOk = await Product.findById(ok._id);
+        expect(fOk.warehouseStocks.find((s) => String(s.warehouseId) === String(from._id)).qty).toBe(10);
+        const fShort = await Product.findById(short._id);
+        expect(fShort.warehouseStocks.find((s) => String(s.warehouseId) === String(from._id)).qty).toBe(1);
+        expect(await StockMovement.countDocuments({ type: 'TRANSFER' })).toBe(before);
+    });
+
+    it('rejects a primary→primary bulk transfer', async () => {
+        const p = await createProduct([], { warehouseQty: 5, shopQty: 0 });
+        const res = await request.post('/api/stock/transfer-bulk').set('Cookie', ownerCookie).send({
+            fromWarehouseId: null,
+            toWarehouseId: null,
+            items: [{ productId: String(p._id), qty: 1 }],
+        });
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects an empty items list', async () => {
+        const wh = await createWarehouse({ code: `BT-EMPTY-${Date.now()}` });
+        const res = await request.post('/api/stock/transfer-bulk').set('Cookie', ownerCookie).send({
+            fromWarehouseId: null,
+            toWarehouseId: String(wh._id),
+            items: [],
+        });
+        expect(res.status).toBe(400);
+    });
+
+    it('exposes warehouse names on movement records for the details view', async () => {
+        const { StockService } = await import('../services/stockService.js');
+
+        const from = await createWarehouse({ code: `BT-POP-F-${Date.now()}` });
+        const to = await createWarehouse({ code: `BT-POP-T-${Date.now()}` });
+        const product = await createProduct([{ warehouseId: from._id, qty: 5 }]);
+
+        await StockService.bulkTransferBetweenWarehouses(
+            [{ productId: String(product._id), qty: 2 }],
+            ownerUser._id,
+            String(from._id),
+            String(to._id)
+        );
+
+        const movements = await StockService.getMovements(new Date(Date.now() - 60 * 1000), new Date());
+        const transfer = movements.find(
+            (m) => m.type === 'TRANSFER' && String(m.productId?._id) === String(product._id)
+        );
+        expect(transfer).toBeTruthy();
+        expect(transfer.fromWarehouseId?.name).toBeTruthy();
+        expect(String(transfer.fromWarehouseId._id)).toBe(String(from._id));
+        expect(String(transfer.toWarehouseId._id)).toBe(String(to._id));
+    });
+});

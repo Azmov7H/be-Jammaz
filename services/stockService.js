@@ -7,6 +7,7 @@ import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import dbConnect from '../lib/db.js';
 import { toIdString } from '../utils/idUtils.js';
+import { withTransaction } from '../utils/dbUtils.js';
 import { NotFoundError, BadRequestError } from '../lib/errors.js';
 
 /**
@@ -476,6 +477,77 @@ export const StockService = {
     },
 
     /**
+     * Transfer many products between two warehouses in a single atomic
+     * operation. Either side may be the PRIMARY warehouse (null id). Example:
+     * warehouse 1 → warehouse 2 in one movement, increasing warehouse 2's
+     * stock and decreasing warehouse 1's, instead of N separate transactions.
+     *
+     * @param {Array<{productId: string, qty: number, note?: string}>} items
+     * @param {string|null} fromWarehouseId source warehouse id (null = primary)
+     * @param {string|null} toWarehouseId destination warehouse id (null = primary)
+     */
+    async bulkTransferBetweenWarehouses(items, userId, fromWarehouseId, toWarehouseId, note = '') {
+        await dbConnect();
+
+        return withTransaction(async (session) => {
+            const from = await normalizeWarehouseSide(fromWarehouseId, session);
+            const to = await normalizeWarehouseSide(toWarehouseId, session);
+
+            const bothPrimary = from === null && to === null;
+            const sameNonPrimary = from !== null && to !== null && String(from) === String(to);
+            if (bothPrimary || sameNonPrimary) {
+                throw new BadRequestError('لا يمكن التحويل إلى نفس المخزن');
+            }
+
+            const movements = [];
+            const results = [];
+
+            for (const item of items) {
+                const quantity = Math.abs(Number(item.qty));
+                if (!quantity) continue;
+
+                const product = await Product.findById(item.productId).session(session);
+                if (!product) throw new NotFoundError(`المنتج غير موجود: ${item.productId}`);
+
+                const debited = await debitWarehouse(item.productId, from, quantity, session);
+                if (!debited) {
+                    const available = isPrimaryWarehouse(from)
+                        ? product.warehouseQty
+                        : ((product.warehouseStocks || []).find((s) => String(s.warehouseId) === String(from))?.qty || 0);
+                    throw new BadRequestError(
+                        `كمية غير كافية للمنتج "${product.name}" في المخزن المصدر. المتوفر: ${available}, المطلوب: ${quantity}`
+                    );
+                }
+                await creditWarehouse(item.productId, to, quantity, session);
+
+                const updated = await Product.findById(item.productId).session(session);
+
+                movements.push({
+                    productId: item.productId,
+                    type: 'TRANSFER',
+                    qty: quantity,
+                    note: item.note || note || 'تحويل بين المخازن',
+                    fromWarehouseId: from || undefined,
+                    toWarehouseId: to || undefined,
+                    createdBy: userId,
+                    snapshot: {
+                        warehouseQty: updated ? updated.warehouseQty : debited.warehouseQty,
+                        shopQty: updated ? updated.shopQty : debited.shopQty
+                    }
+                });
+                results.push(updated || debited);
+            }
+
+            if (movements.length === 0) {
+                throw new BadRequestError('لا تتوفر أصناف صالحة للتحويل');
+            }
+
+            const created = await StockMovement.create(movements, { session, ordered: true });
+            return { moved: results.length, items: results, movements: created };
+        });
+    },
+
+    /**
      * Register initial balance during system handover
      */
     async registerInitialBalance(productId, warehouseQty, shopQty, buyPrice, userId, session = null) {
@@ -674,6 +746,9 @@ export const StockService = {
             .limit(MAX_LIMIT * 5) // hard safety net
             .populate('productId', 'name code')
             .populate('createdBy', 'name')
+            .populate('warehouseId', 'name code isPrimary')
+            .populate('fromWarehouseId', 'name code isPrimary')
+            .populate('toWarehouseId', 'name code isPrimary')
             .lean();
     },
 
