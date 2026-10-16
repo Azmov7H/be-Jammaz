@@ -20,7 +20,7 @@ export const PhysicalInventoryService = {
      */
     async createCount(location, userId, options = {}) {
         await dbConnect();
-        const { category, isBlind } = options;
+        const { category, isBlind, warehouseId = null } = options;
 
         // Build product query
         const productQuery = { isActive: true };
@@ -30,15 +30,30 @@ export const PhysicalInventoryService = {
 
         // Load products
         const products = await Product.find(productQuery)
-            .select('_id name code warehouseQty shopQty buyPrice category')
+            .select('_id name code warehouseQty shopQty warehouseStocks buyPrice category')
             .lean();
+
+        // A non-primary warehouse targets its additive slot; primary/blank means
+        // the legacy Product.warehouseQty bucket.
+        const isPrimary = warehouseId === null || warehouseId === undefined || warehouseId === '' || String(warehouseId) === 'null';
 
         // Prepare items based on location
         const items = products.map(product => {
             let systemQty = 0;
+            let itemWarehouseId = null;
 
-            if (location === 'warehouse') {
-                systemQty = product.warehouseQty || 0;
+            if (location === 'warehouse' || location === 'primary' || location === 'secondary') {
+                if (location === 'secondary' && isPrimary) {
+                    // secondary location requires a concrete additional warehouse
+                    systemQty = 0;
+                } else if (isPrimary) {
+                    systemQty = product.warehouseQty || 0;
+                } else {
+                    const slot = (product.warehouseStocks || [])
+                        .find(s => String(s.warehouseId) === String(warehouseId));
+                    systemQty = slot ? (slot.qty || 0) : 0;
+                    itemWarehouseId = warehouseId;
+                }
             } else if (location === 'shop') {
                 systemQty = product.shopQty || 0;
             } else if (location === 'both') {
@@ -49,6 +64,7 @@ export const PhysicalInventoryService = {
                 productId: product._id,
                 productName: product.name,
                 productCode: product.code,
+                warehouseId: itemWarehouseId,
                 systemQty,
                 actualQty: isBlind ? 0 : systemQty, // [FIX] Zero if blind, else system qty
                 buyPrice: product.buyPrice
@@ -187,17 +203,45 @@ export const PhysicalInventoryService = {
 
                     if (!product) continue;
 
-                    let newWarehouseQty = product.warehouseQty;
-                    let newShopQty = product.shopQty;
+                    const reason = `جرد فعلي - ${item.reason || 'تصحيح الكمية'}`;
+                    let adjustment;
 
-                    // Adjust based on location
-                    if (count.location === 'warehouse') {
-                        newWarehouseQty = item.actualQty;
+                    // Warehouse-scoped counts target the primary bucket OR a
+                    // specific non-primary slot (item.warehouseId). Shop counts
+                    // target shop. "both" keeps the legacy proportional split.
+                    if (count.location === 'warehouse' || count.location === 'primary' || count.location === 'secondary') {
+                        // Skip when a concurrent change already matches the count —
+                        // adjustStockLocation rejects no-op sets.
+                        const currentBucket = item.warehouseId
+                            ? ((product.warehouseStocks || []).find(s => String(s.warehouseId) === String(item.warehouseId))?.qty || 0)
+                            : (product.warehouseQty || 0);
+                        if (currentBucket === item.actualQty) continue;
+
+                        adjustment = await StockService.adjustStockLocation(
+                            item.productId,
+                            'warehouse',
+                            item.actualQty,
+                            reason,
+                            userId,
+                            session,
+                            item.warehouseId || null
+                        );
                     } else if (count.location === 'shop') {
-                        newShopQty = item.actualQty;
-                    } else if (count.location === 'both') {
-                        // Proportional adjustment
+                        if ((product.shopQty || 0) === item.actualQty) continue;
+
+                        adjustment = await StockService.adjustStockLocation(
+                            item.productId,
+                            'shop',
+                            item.actualQty,
+                            reason,
+                            userId,
+                            session
+                        );
+                    } else {
+                        // "both" — proportional split between primary warehouse and shop.
                         const totalStock = (product.warehouseQty || 0) + (product.shopQty || 0);
+                        let newWarehouseQty;
+                        let newShopQty;
 
                         if (totalStock > 0) {
                             const ratio = (product.warehouseQty || 0) / totalStock;
@@ -208,17 +252,16 @@ export const PhysicalInventoryService = {
                             newWarehouseQty = item.actualQty;
                             newShopQty = 0;
                         }
-                    }
 
-                    // Use stock service to adjust
-                    const adjustment = await StockService.adjustStock(
-                        item.productId,
-                        newWarehouseQty,
-                        newShopQty,
-                        `جرد فعلي - ${item.reason || 'تصحيح الكمية'}`,
-                        userId,
-                        session
-                    ); // session);
+                        adjustment = await StockService.adjustStock(
+                            item.productId,
+                            newWarehouseQty,
+                            newShopQty,
+                            reason,
+                            userId,
+                            session
+                        );
+                    }
 
                     adjustments.push(adjustment);
                 }

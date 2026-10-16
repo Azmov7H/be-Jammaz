@@ -31,10 +31,12 @@ router.get('/status', routeHandler(async () => {
 router.post('/transfer', validate(stockTransferSchema),  roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
     const { productId, from, to, qty, quantity, note, warehouseId, fromWarehouseId, toWarehouseId } = req.body;
     const amount = qty ?? quantity;
-    // Explicit endpoints → inter-warehouse transfer.
-    if (fromWarehouseId && toWarehouseId) {
+    // Inter-warehouse transfer: either an explicit warehouse→warehouse move, or
+    // both endpoints supplied. A null/absent id means the PRIMARY warehouse, so
+    // the primary may be on either side.
+    if ((from === 'warehouse' && to === 'warehouse') || (fromWarehouseId && toWarehouseId)) {
         return await StockService.transferBetweenWarehouses(
-            productId, amount, req.user._id, fromWarehouseId, toWarehouseId, note
+            productId, amount, req.user._id, fromWarehouseId ?? null, toWarehouseId ?? null, note
         );
     }
     if (from === 'warehouse' && to === 'shop') {

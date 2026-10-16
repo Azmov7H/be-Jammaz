@@ -9,7 +9,7 @@ const PhysicalInventorySchema = new mongoose.Schema({
     },
     location: {
         type: String,
-        enum: ['warehouse', 'shop', 'both'],
+        enum: ['warehouse', 'shop', 'both', 'primary', 'secondary'],
         required: true
     },
     category: {
@@ -28,6 +28,9 @@ const PhysicalInventorySchema = new mongoose.Schema({
         },
         productName: String, // Snapshot
         productCode: String, // Snapshot
+        // Multi-warehouse: for warehouse/both locations, optionally target a
+        // non-primary warehouse slot. Absent/null means primary.
+        warehouseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse' },
         systemQty: {
             type: Number,
             required: true

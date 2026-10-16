@@ -430,3 +430,182 @@ describe('WH-05: warehouse-aware stock operations', () => {
         expect(fresh.stockQty).toBe(6);
     });
 });
+
+describe('WH-08: physical inventory warehouse scoping', () => {
+    it('scopes a count to a non-primary warehouse slot and reconciles it on completion', async () => {
+        const { default: Product } = await import('../models/Product.js');
+        const { default: StockMovement } = await import('../models/StockMovement.js');
+
+        const wh = await createWarehouse({ code: `PI-${Date.now()}` });
+        // buyPrice 0 keeps valueImpact at 0 → no GL entries needed in this test.
+        const product = await createProduct(
+            [{ warehouseId: wh._id, qty: 8 }],
+            { warehouseQty: 5, shopQty: 2, buyPrice: 0 }
+        );
+
+        const createRes = await request.post('/api/physical-inventory').set('Cookie', ownerCookie)
+            .send({ location: 'warehouse', warehouseId: String(wh._id) });
+        expect(createRes.status, JSON.stringify(createRes.body)).toBeLessThan(300);
+        const count = createRes.body.data;
+
+        const item = count.items.find((i) => String(i.productId) === String(product._id));
+        expect(item).toBeTruthy();
+        expect(item.systemQty).toBe(8);
+        expect(String(item.warehouseId)).toBe(String(wh._id));
+
+        // Count 6 → shortage of 2 in the slot only.
+        const upd = await request.patch(`/api/physical-inventory/${count._id}`).set('Cookie', ownerCookie)
+            .send({ items: [{ productId: String(product._id), actualQty: 6, reason: 'نقص' }] });
+        expect(upd.status, JSON.stringify(upd.body)).toBeLessThan(300);
+
+        const comp = await request.post(`/api/physical-inventory/${count._id}/complete`)
+            .set('Cookie', ownerCookie).send({});
+        expect(comp.status, JSON.stringify(comp.body)).toBeLessThan(300);
+
+        const fresh = await Product.findById(product._id);
+        const slot = fresh.warehouseStocks.find((s) => String(s.warehouseId) === String(wh._id));
+        expect(slot.qty).toBe(6);
+        expect(fresh.warehouseQty).toBe(5); // primary untouched
+        expect(fresh.shopQty).toBe(2);      // shop untouched
+        expect(fresh.stockQty).toBe(5 + 2 + 6);
+
+        const mv = await StockMovement.findOne({
+            productId: product._id,
+            warehouseId: wh._id,
+            type: 'ADJUST'
+        });
+        expect(mv).toBeTruthy();
+    });
+
+    it('keeps the legacy primary-warehouse count working when no warehouseId is given', async () => {
+        const { default: Product } = await import('../models/Product.js');
+        const product = await createProduct([], { warehouseQty: 10, shopQty: 1, buyPrice: 0 });
+
+        const createRes = await request.post('/api/physical-inventory').set('Cookie', ownerCookie)
+            .send({ location: 'warehouse' });
+        expect(createRes.status, JSON.stringify(createRes.body)).toBeLessThan(300);
+        const count = createRes.body.data;
+
+        const item = count.items.find((i) => String(i.productId) === String(product._id));
+        expect(item.systemQty).toBe(10);
+        expect(item.warehouseId).toBeFalsy();
+
+        await request.patch(`/api/physical-inventory/${count._id}`).set('Cookie', ownerCookie)
+            .send({ items: [{ productId: String(product._id), actualQty: 7, reason: 'نقص' }] });
+
+        const comp = await request.post(`/api/physical-inventory/${count._id}/complete`)
+            .set('Cookie', ownerCookie).send({});
+        expect(comp.status, JSON.stringify(comp.body)).toBeLessThan(300);
+
+        const fresh = await Product.findById(product._id);
+        expect(fresh.warehouseQty).toBe(7);
+        expect(fresh.shopQty).toBe(1);
+        expect(fresh.stockQty).toBe(8);
+    });
+});
+
+describe('WH-09: inter-warehouse transfers (primary on either side)', () => {
+    it('transfers from the primary warehouse to a non-primary slot via the API', async () => {
+        const { default: Product } = await import('../models/Product.js');
+        const { default: StockMovement } = await import('../models/StockMovement.js');
+
+        const wh = await createWarehouse({ code: `IW-P2N-${Date.now()}` });
+        const product = await createProduct([], { warehouseQty: 10, shopQty: 0 });
+
+        const res = await request.post('/api/stock/transfer').set('Cookie', ownerCookie).send({
+            productId: String(product._id),
+            from: 'warehouse',
+            to: 'warehouse',
+            qty: 4,
+            fromWarehouseId: null,
+            toWarehouseId: String(wh._id),
+        });
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+
+        const fresh = await Product.findById(product._id);
+        const slot = fresh.warehouseStocks.find((s) => String(s.warehouseId) === String(wh._id));
+        expect(fresh.warehouseQty).toBe(6);
+        expect(slot.qty).toBe(4);
+        expect(fresh.stockQty).toBe(10);
+
+        const movement = await StockMovement.findOne({ productId: product._id, type: 'TRANSFER' });
+        expect(movement.fromWarehouseId).toBeFalsy();
+        expect(String(movement.toWarehouseId)).toBe(String(wh._id));
+    });
+
+    it('transfers from a non-primary slot back to the primary via the API', async () => {
+        const { default: Product } = await import('../models/Product.js');
+
+        const wh = await createWarehouse({ code: `IW-N2P-${Date.now()}` });
+        const product = await createProduct([{ warehouseId: wh._id, qty: 8 }], { warehouseQty: 2, shopQty: 0 });
+
+        const res = await request.post('/api/stock/transfer').set('Cookie', ownerCookie).send({
+            productId: String(product._id),
+            from: 'warehouse',
+            to: 'warehouse',
+            qty: 5,
+            fromWarehouseId: String(wh._id),
+            toWarehouseId: null,
+        });
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+
+        const fresh = await Product.findById(product._id);
+        const slot = fresh.warehouseStocks.find((s) => String(s.warehouseId) === String(wh._id));
+        expect(slot.qty).toBe(3);
+        expect(fresh.warehouseQty).toBe(7);
+        expect(fresh.stockQty).toBe(10);
+    });
+
+    it("resolves the primary warehouse's real _id to the primary slot (no bogus slot)", async () => {
+        const { StockService } = await import('../services/stockService.js');
+        const { default: Product } = await import('../models/Product.js');
+        const { default: Warehouse } = await import('../models/Warehouse.js');
+
+        const primary = await Warehouse.findOne({ isPrimary: true });
+        const wh = await createWarehouse({ code: `IW-RES-${Date.now()}` });
+        const product = await createProduct([], { warehouseQty: 5, shopQty: 0 });
+
+        await StockService.transferBetweenWarehouses(
+            product._id, 2, ownerUser._id, primary._id, wh._id
+        );
+
+        const fresh = await Product.findById(product._id);
+        expect(fresh.warehouseQty).toBe(3);
+        expect(fresh.warehouseStocks.find((s) => String(s.warehouseId) === String(wh._id)).qty).toBe(2);
+        // The primary's id must never be materialised as a non-primary slot.
+        expect(fresh.warehouseStocks.some((s) => String(s.warehouseId) === String(primary._id))).toBe(false);
+    });
+
+    it('rejects a primary→primary (same warehouse) transfer', async () => {
+        const { default: Product } = await import('../models/Product.js');
+        const product = await createProduct([], { warehouseQty: 5, shopQty: 0 });
+
+        const res = await request.post('/api/stock/transfer').set('Cookie', ownerCookie).send({
+            productId: String(product._id),
+            from: 'warehouse',
+            to: 'warehouse',
+            qty: 1,
+            fromWarehouseId: null,
+            toWarehouseId: null,
+        });
+        expect(res.status).toBe(400);
+
+        const fresh = await Product.findById(product._id);
+        expect(fresh.warehouseQty).toBe(5);
+    });
+
+    it('rejects a same non-primary warehouse transfer', async () => {
+        const wh = await createWarehouse({ code: `IW-SAME-${Date.now()}` });
+        const product = await createProduct([{ warehouseId: wh._id, qty: 5 }]);
+
+        const res = await request.post('/api/stock/transfer').set('Cookie', ownerCookie).send({
+            productId: String(product._id),
+            from: 'warehouse',
+            to: 'warehouse',
+            qty: 1,
+            fromWarehouseId: String(wh._id),
+            toWarehouseId: String(wh._id),
+        });
+        expect(res.status).toBe(400);
+    });
+});

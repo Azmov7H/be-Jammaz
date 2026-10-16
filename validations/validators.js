@@ -199,11 +199,16 @@ export const stockTransferSchema = z.object({
     quantity: qty.optional(), // legacy alias accepted by route
     note: z.string().max(500).optional(),
     // Multi-warehouse: the non-primary warehouse on the warehouse side of the
-    // move, or explicit endpoints for an inter-warehouse transfer.
+    // move, or explicit endpoints for an inter-warehouse transfer. A null/absent
+    // warehouseId means the PRIMARY warehouse, so warehouse↔warehouse moves may
+    // involve the primary on either side.
     warehouseId: idField.optional().nullable(),
     fromWarehouseId: idField.optional().nullable(),
     toWarehouseId: idField.optional().nullable()
-}).refine(data => data.from !== data.to, {
+}).refine(data => !(data.from === 'shop' && data.to === 'shop'), {
+    // shop→shop is never a transfer. warehouse→warehouse is allowed (inter-
+    // warehouse); same-warehouse moves are rejected by the service once the
+    // primary ids are resolved.
     message: 'لا يمكن التحويل لنفس الموقع'
 });
 
@@ -469,9 +474,10 @@ export const removeCustomPriceSchema = z.object({
 // Physical inventory
 // ---------------------------------------------------------------------------
 export const physicalInventoryCreateSchema = z.object({
-    location: z.enum(['warehouse', 'shop', 'both']),
+    location: z.enum(['warehouse', 'shop', 'both', 'primary', 'secondary']),
     category: z.string().max(100).nullish(),
     isBlind: z.coerce.boolean().optional().default(false),
+    warehouseId: idField.optional().nullable(),
 });
 
 export const physicalInventoryUpdateSchema = z.object({
@@ -481,6 +487,7 @@ export const physicalInventoryUpdateSchema = z.object({
         reason: z.string().max(500).optional(),
         justification: z.string().max(2000).optional(),
         justificationReason: z.enum(['damage', 'expired', 'theft', 'data_error', 'other']).nullish(),
+        warehouseId: idField.optional().nullable(),
     })).min(1).max(1000),
     notes: z.string().max(2000).optional(),
 });

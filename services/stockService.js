@@ -1,4 +1,5 @@
 import Product from '../models/Product.js';
+import Warehouse from '../models/Warehouse.js';
 import { literalContains } from '../lib/safeRegex.js';
 import { boundedRange, MAX_LIMIT } from '../lib/paginate.js';
 import StockMovement from '../models/StockMovement.js';
@@ -18,6 +19,18 @@ import { NotFoundError, BadRequestError } from '../lib/errors.js';
  */
 export const isPrimaryWarehouse = (warehouseId) =>
     warehouseId === null || warehouseId === undefined || warehouseId === '' || String(warehouseId) === 'null';
+
+/**
+ * Map a warehouse selector to a canonical side: `null` for the primary
+ * warehouse, otherwise the given id. Passing the primary warehouse's own _id
+ * is resolved to null so callers cannot accidentally create a slot for it.
+ */
+async function normalizeWarehouseSide(warehouseId, session) {
+    if (isPrimaryWarehouse(warehouseId)) return null;
+    const primary = await Warehouse.findOne({ isPrimary: true }).select('_id').session(session).lean();
+    if (primary && String(primary._id) === String(warehouseId)) return null;
+    return warehouseId;
+}
 
 /**
  * Build a Mongo update doc from `{inc, set}` option objects (T-DB-05).
@@ -415,27 +428,34 @@ export const StockService = {
 
     /**
      * Transfer stock between two warehouses (either side may be primary).
-     * @param {string} toWarehouseId destination warehouse id (required, non-primary or primary)
+     * A null/absent id means the PRIMARY warehouse; passing the primary
+     * warehouse's own _id is resolved to the primary slot as well.
+     * @param {string|null} fromWarehouseId source warehouse id (null = primary)
+     * @param {string|null} toWarehouseId destination warehouse id (null = primary)
      */
     async transferBetweenWarehouses(productId, quantity, userId, fromWarehouseId, toWarehouseId, note = '', session = null) {
         const product = await Product.findById(productId).session(session);
         if (!product) throw new NotFoundError('المنتج غير موجود');
 
-        if (String(fromWarehouseId || '') === String(toWarehouseId || '') &&
-            isPrimaryWarehouse(fromWarehouseId) === isPrimaryWarehouse(toWarehouseId)) {
+        const from = await normalizeWarehouseSide(fromWarehouseId, session);
+        const to = await normalizeWarehouseSide(toWarehouseId, session);
+
+        const bothPrimary = from === null && to === null;
+        const sameNonPrimary = from !== null && to !== null && String(from) === String(to);
+        if (bothPrimary || sameNonPrimary) {
             throw new BadRequestError('لا يمكن التحويل إلى نفس المخزن');
         }
 
-        const debited = await debitWarehouse(productId, fromWarehouseId, quantity, session);
+        const debited = await debitWarehouse(productId, from, quantity, session);
         if (!debited) {
-            const available = isPrimaryWarehouse(fromWarehouseId)
+            const available = isPrimaryWarehouse(from)
                 ? product.warehouseQty
-                : ((product.warehouseStocks || []).find(s => String(s.warehouseId) === String(fromWarehouseId))?.qty || 0);
+                : ((product.warehouseStocks || []).find(s => String(s.warehouseId) === String(from))?.qty || 0);
             throw new BadRequestError(
                 `كمية غير كافية في المخزن المصدر. المتوفر: ${available}, المطلوب: ${quantity}`
             );
         }
-        await creditWarehouse(productId, toWarehouseId, quantity, session);
+        await creditWarehouse(productId, to, quantity, session);
 
         const updated = await Product.findById(productId).session(session);
 
@@ -444,8 +464,8 @@ export const StockService = {
             type: 'TRANSFER',
             qty: quantity,
             note: note || 'تحويل بين المخازن',
-            fromWarehouseId: fromWarehouseId || undefined,
-            toWarehouseId: toWarehouseId || undefined,
+            fromWarehouseId: from || undefined,
+            toWarehouseId: to || undefined,
             createdBy: userId,
             snapshot: {
                 warehouseQty: updated ? updated.warehouseQty : debited.warehouseQty,
@@ -501,10 +521,12 @@ export const StockService = {
         const oldWarehouseQty = product.warehouseQty;
         const oldShopQty = product.shopQty;
 
-        // Set new quantities
+        // Set new quantities. stockQty must also include the additive per-warehouse
+        // slots so multi-warehouse totals are preserved (no-op when none exist).
+        const slotTotals = (product.warehouseStocks || []).reduce((sum, s) => sum + (s.qty || 0), 0);
         product.warehouseQty = newWarehouseQty;
         product.shopQty = newShopQty;
-        product.stockQty = newWarehouseQty + newShopQty;
+        product.stockQty = newWarehouseQty + newShopQty + slotTotals;
         await product.save({ session });
 
         const warehouseDiff = newWarehouseQty - oldWarehouseQty;
