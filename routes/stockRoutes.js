@@ -2,8 +2,15 @@ import express from 'express';
 import { StockService } from '../services/stockService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
-import { validate } from '../lib/validate.js';
-import { stockTransferSchema, stockTransferBulkSchema, stockMoveSchema, stockAdjustSchema } from '../validations/index.js';
+import { validate, validateParams } from '../lib/validate.js';
+import {
+    stockTransferSchema,
+    stockTransferBulkSchema,
+    stockMoveSchema,
+    stockAdjustSchema,
+    stockMovementIdParamsSchema,
+    stockMovementReverseSchema
+} from '../validations/index.js';
 
 const router = express.Router();
 
@@ -22,6 +29,12 @@ router.get('/movements', routeHandler(async (req) => {
         endDate ? new Date(endDate) : new Date(),
         type
     );
+}));
+
+// Undo a transfer movement (transfers only): the stock mutation is inverted
+// atomically and a REVERSAL movement is recorded against the original.
+router.post('/movements/:id/reverse', validateParams(stockMovementIdParamsSchema), roleMiddleware(['warehouse', 'owner', 'manager']), validate(stockMovementReverseSchema), routeHandler(async (req) => {
+    return await StockService.reverseMovement(req.params.id, req.user._id, req.body.note);
 }));
 
 router.get('/status', routeHandler(async () => {

@@ -231,6 +231,12 @@ export const stockAdjustSchema = z.object({
     warehouseId: idField.optional().nullable(),
 });
 
+// Undo a transfer movement: params-level id + optional note.
+export const stockMovementIdParamsSchema = z.object({ id: idSchema });
+export const stockMovementReverseSchema = z.object({
+    note: z.string().max(500, 'الملاحظة طويلة جداً').optional()
+});
+
 // ---------------------------------------------------------------------------
 // Parties
 // ---------------------------------------------------------------------------
