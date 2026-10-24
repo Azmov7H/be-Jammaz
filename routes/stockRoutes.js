@@ -2,8 +2,15 @@ import express from 'express';
 import { StockService } from '../services/stockService.js';
 import { routeHandler } from '../lib/route-handler.js';
 import { authMiddleware, roleMiddleware } from '../middlewares/authMiddleware.js';
-import { validate } from '../lib/validate.js';
-import { stockTransferSchema, stockMoveSchema, stockAdjustSchema } from '../validations/index.js';
+import { validate, validateParams } from '../lib/validate.js';
+import {
+    stockTransferSchema,
+    stockTransferBulkSchema,
+    stockMoveSchema,
+    stockAdjustSchema,
+    stockMovementIdParamsSchema,
+    stockMovementReverseSchema
+} from '../validations/index.js';
 
 const router = express.Router();
 
@@ -22,6 +29,12 @@ router.get('/movements', routeHandler(async (req) => {
         endDate ? new Date(endDate) : new Date(),
         type
     );
+}));
+
+// Undo a transfer movement (transfers only): the stock mutation is inverted
+// atomically and a REVERSAL movement is recorded against the original.
+router.post('/movements/:id/reverse', validateParams(stockMovementIdParamsSchema), roleMiddleware(['warehouse', 'owner', 'manager']), validate(stockMovementReverseSchema), routeHandler(async (req) => {
+    return await StockService.reverseMovement(req.params.id, req.user._id, req.body.note);
 }));
 
 router.get('/status', routeHandler(async () => {
@@ -43,6 +56,16 @@ router.post('/transfer', validate(stockTransferSchema),  roleMiddleware(['wareho
         return await StockService.transferToShop(productId, amount, req.user._id, note, null, warehouseId);
     }
     return await StockService.transferToWarehouse(productId, amount, req.user._id, note, null, warehouseId);
+}));
+
+// Bulk inter-warehouse transfer: move many products between two warehouses in a
+// single atomic operation. Same warehouse-side rules as /transfer (a null id
+// means the PRIMARY warehouse).
+router.post('/transfer-bulk', validate(stockTransferBulkSchema), roleMiddleware(['warehouse', 'owner', 'manager']), routeHandler(async (req) => {
+    const { items, note, fromWarehouseId, toWarehouseId } = req.body;
+    return await StockService.bulkTransferBetweenWarehouses(
+        items, req.user._id, fromWarehouseId ?? null, toWarehouseId ?? null, note
+    );
 }));
 
 // Alias for stock movements for frontend compatibility

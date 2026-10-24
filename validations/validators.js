@@ -212,12 +212,29 @@ export const stockTransferSchema = z.object({
     message: 'لا يمكن التحويل لنفس الموقع'
 });
 
+export const stockTransferBulkSchema = z.object({
+    items: z.array(z.object({
+        productId: idField,
+        qty,
+        note: z.string().max(500).optional()
+    })).min(1, 'يجب اختيار منتج واحد على الأقل').max(500),
+    note: z.string().max(500).optional(),
+    fromWarehouseId: idField.optional().nullable(),
+    toWarehouseId: idField.optional().nullable()
+});
+
 export const stockAdjustSchema = z.object({
     productId: idField,
     location: z.enum(['shop', 'warehouse']),
     newQty: z.coerce.number().min(0).max(1e6),
     reason: z.string().min(2, 'يجب ذكر سبب التعديل').max(500),
     warehouseId: idField.optional().nullable(),
+});
+
+// Undo a transfer movement: params-level id + optional note.
+export const stockMovementIdParamsSchema = z.object({ id: idSchema });
+export const stockMovementReverseSchema = z.object({
+    note: z.string().max(500, 'الملاحظة طويلة جداً').optional()
 });
 
 // ---------------------------------------------------------------------------

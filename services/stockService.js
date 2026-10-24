@@ -7,7 +7,8 @@ import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import dbConnect from '../lib/db.js';
 import { toIdString } from '../utils/idUtils.js';
-import { NotFoundError, BadRequestError } from '../lib/errors.js';
+import { withTransaction } from '../utils/dbUtils.js';
+import { NotFoundError, BadRequestError, ConflictError } from '../lib/errors.js';
 
 /**
  * Multi-warehouse helpers (WH-05).
@@ -31,6 +32,14 @@ async function normalizeWarehouseSide(warehouseId, session) {
     if (primary && String(primary._id) === String(warehouseId)) return null;
     return warehouseId;
 }
+
+/** Movement types an undo (REVERSAL) supports — transfers only. */
+const REVERSIBLE_TYPES = ['TRANSFER', 'TRANSFER_TO_SHOP', 'TRANSFER_TO_WAREHOUSE'];
+const REVERSAL_SOURCE_LABEL = {
+    TRANSFER: 'تحويل بين المخازن',
+    TRANSFER_TO_SHOP: 'تحويل من المخزن إلى المحل',
+    TRANSFER_TO_WAREHOUSE: 'تحويل من المحل إلى المخزن'
+};
 
 /**
  * Build a Mongo update doc from `{inc, set}` option objects (T-DB-05).
@@ -476,6 +485,208 @@ export const StockService = {
     },
 
     /**
+     * Transfer many products between two warehouses in a single atomic
+     * operation. Either side may be the PRIMARY warehouse (null id). Example:
+     * warehouse 1 → warehouse 2 in one movement, increasing warehouse 2's
+     * stock and decreasing warehouse 1's, instead of N separate transactions.
+     *
+     * @param {Array<{productId: string, qty: number, note?: string}>} items
+     * @param {string|null} fromWarehouseId source warehouse id (null = primary)
+     * @param {string|null} toWarehouseId destination warehouse id (null = primary)
+     */
+    async bulkTransferBetweenWarehouses(items, userId, fromWarehouseId, toWarehouseId, note = '') {
+        await dbConnect();
+
+        return withTransaction(async (session) => {
+            const from = await normalizeWarehouseSide(fromWarehouseId, session);
+            const to = await normalizeWarehouseSide(toWarehouseId, session);
+
+            const bothPrimary = from === null && to === null;
+            const sameNonPrimary = from !== null && to !== null && String(from) === String(to);
+            if (bothPrimary || sameNonPrimary) {
+                throw new BadRequestError('لا يمكن التحويل إلى نفس المخزن');
+            }
+
+            const movements = [];
+            const results = [];
+
+            for (const item of items) {
+                const quantity = Math.abs(Number(item.qty));
+                if (!quantity) continue;
+
+                const product = await Product.findById(item.productId).session(session);
+                if (!product) throw new NotFoundError(`المنتج غير موجود: ${item.productId}`);
+
+                const debited = await debitWarehouse(item.productId, from, quantity, session);
+                if (!debited) {
+                    const available = isPrimaryWarehouse(from)
+                        ? product.warehouseQty
+                        : ((product.warehouseStocks || []).find((s) => String(s.warehouseId) === String(from))?.qty || 0);
+                    throw new BadRequestError(
+                        `كمية غير كافية للمنتج "${product.name}" في المخزن المصدر. المتوفر: ${available}, المطلوب: ${quantity}`
+                    );
+                }
+                await creditWarehouse(item.productId, to, quantity, session);
+
+                const updated = await Product.findById(item.productId).session(session);
+
+                movements.push({
+                    productId: item.productId,
+                    type: 'TRANSFER',
+                    qty: quantity,
+                    note: item.note || note || 'تحويل بين المخازن',
+                    fromWarehouseId: from || undefined,
+                    toWarehouseId: to || undefined,
+                    createdBy: userId,
+                    snapshot: {
+                        warehouseQty: updated ? updated.warehouseQty : debited.warehouseQty,
+                        shopQty: updated ? updated.shopQty : debited.shopQty
+                    }
+                });
+                results.push(updated || debited);
+            }
+
+            if (movements.length === 0) {
+                throw new BadRequestError('لا تتوفر أصناف صالحة للتحويل');
+            }
+
+            const created = await StockMovement.create(movements, { session, ordered: true });
+            return { moved: results.length, items: results, movements: created };
+        });
+    },
+
+    /**
+     * Undo a stock transfer (TMV-01 / undo).
+     *
+     * Symmetrically inverts the stock mutation of an original TRANSFER /
+     * TRANSFER_TO_SHOP / TRANSFER_TO_WAREHOUSE movement and records a single
+     * `REVERSAL` movement linked to the original (`reverses`). A movement can
+     * be undone at most once (partial unique index + transactional check).
+     * Non-transfer movements (sales, purchases, adjustments) are excluded so
+     * the reversal only ever runs against the transfer pair logic above.
+     *
+     * Targets must still hold the quantity: if the products were moved onward,
+     * the undo is refused (over-crediting the source would corrupt balances).
+     *
+     * @param {string} movementId id of the original transfer movement
+     * @param {string} userId
+     * @param {string} [note] optional user note (defaults to an undo label)
+     * @returns {Promise<{product: object|null, reversal: object}>}
+     */
+    async reverseMovement(movementId, userId, note = '') {
+        return withTransaction(async (session) => {
+            const original = await StockMovement.findById(movementId).session(session);
+            if (!original) throw new NotFoundError('الحركة غير موجودة');
+
+            if (!REVERSIBLE_TYPES.includes(original.type)) {
+                throw new BadRequestError('لا يمكن التراجع عن هذا النوع من الحركات');
+            }
+
+            // Transactional re-check; the partial unique index backs this up
+            // under concurrent undo attempts (loser aborts with a 409).
+            const alreadyReversed = await StockMovement
+                .findOne({ reverses: original._id }).session(session).lean();
+            if (alreadyReversed) {
+                throw new ConflictError('تم التراجع عن هذه الحركة بالفعل');
+            }
+
+            const productId = original.productId;
+            const qty = Math.abs(Number(original.qty));
+            if (!qty) throw new BadRequestError('كمية الحركة غير صالحة لضبط التراجع');
+
+            let updated;
+            // Reversal-direction context attached to the REVERSAL record.
+            let directionCtx;
+
+            if (original.type === 'TRANSFER') {
+                // Inter-warehouse: take the stock back from the destination
+                // (DB availability guard), then return it to the source.
+                const from = await normalizeWarehouseSide(original.fromWarehouseId, session);
+                const to = await normalizeWarehouseSide(original.toWarehouseId, session);
+                const debited = await debitWarehouse(productId, to, qty, session);
+                if (!debited) {
+                    const dest = await Product.findById(productId).session(session);
+                    const available = isPrimaryWarehouse(to)
+                        ? (dest?.warehouseQty ?? 0)
+                        : ((dest?.warehouseStocks || []).find((s) => String(s.warehouseId) === String(to))?.qty || 0);
+                    throw new BadRequestError(
+                        `لا يمكن التراجع: الكمية غير متوافرة في المخزن الوجهة. المتوفر: ${available}, المطلوب: ${qty}`
+                    );
+                }
+                await creditWarehouse(productId, from, qty, session);
+                updated = await Product.findById(productId).session(session);
+                // Mirrored endpoints — the reversal physically flows back.
+                directionCtx = {
+                    fromWarehouseId: to || undefined,
+                    toWarehouseId: from || undefined
+                };
+            } else if (original.type === 'TRANSFER_TO_SHOP') {
+                // Original: warehouse → shop. Undo: shop → warehouse.
+                const target = await normalizeWarehouseSide(original.warehouseId, session);
+
+                if (isPrimaryWarehouse(target)) {
+                    // Primary: single sub-bucket move back (stockQty unchanged).
+                    updated = await Product.findOneAndUpdate(
+                        { _id: productId, shopQty: { $gte: qty } },
+                        { $inc: { shopQty: -qty, warehouseQty: qty } },
+                        { new: true, session }
+                    );
+                } else {
+                    const debited = await Product.findOneAndUpdate(
+                        { _id: productId, shopQty: { $gte: qty } },
+                        { $inc: { shopQty: -qty, stockQty: -qty } },
+                        { new: true, session }
+                    );
+                    if (!debited) throw new BadRequestError('لا يمكن التراجع: الكمية غير متوافرة في المحل');
+                    await creditWarehouse(productId, target, qty, session);
+                    updated = await Product.findById(productId).session(session);
+                }
+                if (!updated) {
+                    throw new BadRequestError('لا يمكن التراجع: الكمية غير متوافرة في المحل');
+                }
+
+                directionCtx = { warehouseId: original.warehouseId || undefined };
+            } else {
+                // TRANSFER_TO_WAREHOUSE. Original: shop → warehouse. Undo: warehouse → shop.
+                const source = await normalizeWarehouseSide(original.warehouseId, session);
+                if (isPrimaryWarehouse(source)) {
+                    updated = await Product.findOneAndUpdate(
+                        { _id: productId, warehouseQty: { $gte: qty } },
+                        { $inc: { warehouseQty: -qty, shopQty: qty } },
+                        { new: true, session }
+                    );
+                } else {
+                    updated = await debitWarehouse(productId, source, qty, session, {
+                        inc: { shopQty: qty },
+                        syncStockQty: false
+                    });
+                }
+                if (!updated) {
+                    throw new BadRequestError('لا يمكن التراجع: الكمية غير متوافرة في المخزن المصدر');
+                }
+
+                directionCtx = { warehouseId: original.warehouseId || undefined };
+            }
+
+            const reversalDocs = await StockMovement.create([{
+                productId,
+                type: 'REVERSAL',
+                qty,
+                note: note || `تراجع عن: ${REVERSAL_SOURCE_LABEL[original.type]}${original.note ? ` (${original.note})` : ''}`,
+                reverses: original._id,
+                ...directionCtx,
+                createdBy: userId,
+                snapshot: {
+                    warehouseQty: updated ? updated.warehouseQty : undefined,
+                    shopQty: updated ? updated.shopQty : undefined
+                }
+            }], { session });
+
+            return { product: updated, reversal: reversalDocs[0] };
+        });
+    },
+
+    /**
      * Register initial balance during system handover
      */
     async registerInitialBalance(productId, warehouseQty, shopQty, buyPrice, userId, session = null) {
@@ -669,12 +880,38 @@ export const StockService = {
             query.type = type;
         }
 
-        return await StockMovement.find(query)
+        const movements = await StockMovement.find(query)
             .sort({ date: -1 })
             .limit(MAX_LIMIT * 5) // hard safety net
             .populate('productId', 'name code')
             .populate('createdBy', 'name')
+            .populate('reverses', '_id type qty')
+            .populate('warehouseId', 'name code isPrimary')
+            .populate('fromWarehouseId', 'name code isPrimary')
+            .populate('toWarehouseId', 'name code isPrimary')
             .lean();
+
+        // Undo feature: flag originals already undone so the UI can disable the
+        // action and show the reversal reference (single bounded round trip).
+        const ids = movements.map((m) => m._id);
+        if (ids.length > 0) {
+            const reversals = await StockMovement
+                .find({ reverses: { $in: ids } })
+                .select('_id reverses type').lean();
+            const byOriginal = new Map(
+                reversals.map((r) => [String(r.reverses), { reversalId: r._id, reversalType: r.type }])
+            );
+            for (const m of movements) {
+                const info = byOriginal.get(String(m._id));
+                if (info) {
+                    m.reversed = true;
+                    m.reversalId = info.reversalId;
+                    m.reversalType = info.reversalType;
+                }
+            }
+        }
+
+        return movements;
     },
 
     /**
